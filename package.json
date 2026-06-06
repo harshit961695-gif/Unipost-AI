@@ -6,7 +6,9 @@
     "dev": "next dev -p 3000",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "autosync": "node scripts/autosync.js",
+    "autosync:watch": "node scripts/autosync.js --watch"
   },
   "dependencies": {
     "@google/genai": "^1.37.0",
