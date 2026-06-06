@@ -19,25 +19,38 @@ export async function GET(request: NextRequest) {
             { auth: { persistSession: false, autoRefreshToken: false } }
         );
 
-        // 1. Connected accounts (Only in Supabase)
-        const { data: accounts, error: accErr } = await supabase
-            .from('connected_accounts')
-            .select('*')
-            .eq('user_id', userId);
-
-        console.log(`[DASHBOARD STATS] connected_accounts query:`, { count: accounts?.length, error: accErr?.message });
-
-        // 2. All posts from post_logs via Prisma (Neon)
-        let allPosts: any[] = [];
-        try {
-            allPosts = await prisma.post_logs.findMany({
+        // Run all four main database queries concurrently to minimize network latency impact
+        const [accountsResult, postsResult, currentStatsResult, snapCountResult] = await Promise.all([
+            supabase
+                .from('connected_accounts')
+                .select('*')
+                .eq('user_id', userId),
+            prisma.post_logs.findMany({
                 where: { user_id: userId },
                 orderBy: { created_at: 'desc' }
-            });
-        } catch (prismaErr: any) {
-            console.error('[DASHBOARD STATS] Neon post_logs fetch failed:', prismaErr.message);
-        }
+            }).catch((prismaErr) => {
+                console.error('[DASHBOARD STATS] Neon post_logs fetch failed:', prismaErr.message);
+                return [] as any[];
+            }),
+            prisma.analytics_current.findUnique({
+                where: { user_id: userId }
+            }).catch((prismaErr) => {
+                console.error('[DASHBOARD STATS] Neon analytics_current fetch failed:', prismaErr.message);
+                return null;
+            }),
+            prisma.analytics_snapshots.count({
+                where: { user_id: userId }
+            }).catch((prismaErr) => {
+                console.error('[DASHBOARD STATS] Neon snapshot count failed:', prismaErr.message);
+                return 0;
+            })
+        ]);
 
+        const accounts = accountsResult.data;
+        const accErr = accountsResult.error;
+        console.log(`[DASHBOARD STATS] connected_accounts query:`, { count: accounts?.length, error: accErr?.message });
+
+        const allPosts = postsResult as any[];
         console.log(`[DASHBOARD STATS] post_logs query:`, { count: allPosts.length });
 
         const successPosts = allPosts.filter(p => p.status === 'success' || p.status === 'published').length;
@@ -88,35 +101,26 @@ export async function GET(request: NextRequest) {
         });
 
         // 4. Latest analytics snapshot via analytics_current with fallback (Neon)
+        const currentStats = currentStatsResult;
         let latestSnap: any = null;
-        try {
-            const currentStats = await prisma.analytics_current.findUnique({
-                where: { user_id: userId }
-            });
-            if (currentStats) {
-                latestSnap = {
-                    ...currentStats,
-                    snapshot_date: currentStats.updated_at
-                };
-            } else {
+        if (currentStats) {
+            latestSnap = {
+                ...currentStats,
+                snapshot_date: currentStats.updated_at
+            };
+        } else {
+            try {
                 latestSnap = await prisma.analytics_snapshots.findFirst({
                     where: { user_id: userId },
                     orderBy: { created_at: 'desc' }
                 });
+            } catch (prismaErr: any) {
+                console.error('[DASHBOARD STATS] Neon analytics_snapshots fallback findFirst failed:', prismaErr.message);
             }
-        } catch (prismaErr: any) {
-            console.error('[DASHBOARD STATS] Neon analytics_current fetch failed:', prismaErr.message);
         }
 
         // 5. Snapshot count via Prisma (Neon)
-        let snapCount = 0;
-        try {
-            snapCount = await prisma.analytics_snapshots.count({
-                where: { user_id: userId }
-            });
-        } catch (prismaErr: any) {
-            console.error('[DASHBOARD STATS] Neon snapshot count failed:', prismaErr.message);
-        }
+        const snapCount = snapCountResult as number;
 
         return NextResponse.json({
             success: true,

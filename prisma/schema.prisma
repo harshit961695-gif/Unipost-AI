@@ -26,6 +26,8 @@ model posts {
   @@index([status])
   @@index([scheduled_at])
   @@index([created_at])
+  @@index([user_id, status])
+  @@index([user_id, created_at])
 }
 
 model analytics_snapshots {
@@ -102,6 +104,8 @@ model post_logs {
   @@index([user_id])
   @@index([platform])
   @@index([platform_post_id])
+  @@index([status])
+  @@index([user_id, created_at])
 }
 
 model notifications {

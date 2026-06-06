@@ -71,7 +71,15 @@ export async function PATCH(
     for (const field of allowedFields) {
       if (body[field] !== undefined) {
         if (field === 'scheduled_at' || field === 'published_at') {
-          updates[field] = body[field] ? new Date(body[field]) : null
+          if (body[field]) {
+            const parsedDate = new Date(body[field])
+            if (isNaN(parsedDate.getTime())) {
+              return NextResponse.json({ error: `Invalid ${field} date format` }, { status: 400 })
+            }
+            updates[field] = parsedDate
+          } else {
+            updates[field] = null
+          }
         } else {
           updates[field] = body[field]
         }

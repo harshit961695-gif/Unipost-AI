@@ -89,47 +89,49 @@ export default function SettingsPage() {
 
   useEffect(() => {
     setMounted(true)
-    fetchUser()
-  }, [])
+    
+    const fetchUser = async () => {
+      try {
+        const { data: { user } } = await supabase.auth.getUser()
+        if (user) {
+          setUserId(user.id)
+          setUserEmail(user.email || "")
+          setUserName(user.user_metadata?.full_name || user.user_metadata?.name || "")
+          setAvatarUrl(user.user_metadata?.avatar_url || "")
+          
+          if (user.created_at) {
+            setMemberSince(new Date(user.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' }))
+          }
+          if (user.last_sign_in_at) {
+            setLastLogin(new Date(user.last_sign_in_at).toLocaleString())
+          }
 
-  const fetchUser = async () => {
-    try {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (user) {
-        setUserId(user.id)
-        setUserEmail(user.email || "")
-        setUserName(user.user_metadata?.full_name || user.user_metadata?.name || "")
-        setAvatarUrl(user.user_metadata?.avatar_url || "")
-        
-        if (user.created_at) {
-          setMemberSince(new Date(user.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' }))
-        }
-        if (user.last_sign_in_at) {
-          setLastLogin(new Date(user.last_sign_in_at).toLocaleString())
-        }
+          // AI preferences fallback to user_metadata
+          if (user.user_metadata?.aiSettings) {
+            setAiProvider(user.user_metadata.aiSettings.provider || "gemini")
+            setContentStyle(user.user_metadata.aiSettings.style || "engaging")
+            setLanguagePref(user.user_metadata.aiSettings.language || "en")
+          }
+          
+          // Notifications fallback to user_metadata
+          if (user.user_metadata?.notificationPreferences) {
+            setNotifSuccess(user.user_metadata.notificationPreferences.success !== false)
+            setNotifFailure(user.user_metadata.notificationPreferences.failure !== false)
+            setNotifSchedule(user.user_metadata.notificationPreferences.schedule !== false)
+            setNotifAnalytics(!!user.user_metadata.notificationPreferences.analytics)
+          }
 
-        // AI preferences fallback to user_metadata
-        if (user.user_metadata?.aiSettings) {
-          setAiProvider(user.user_metadata.aiSettings.provider || "gemini")
-          setContentStyle(user.user_metadata.aiSettings.style || "engaging")
-          setLanguagePref(user.user_metadata.aiSettings.language || "en")
+          // Fetch connections once user is fetched
+          await fetchConnections(user.id)
         }
-        
-        // Notifications fallback to user_metadata
-        if (user.user_metadata?.notificationPreferences) {
-          setNotifSuccess(user.user_metadata.notificationPreferences.success !== false)
-          setNotifFailure(user.user_metadata.notificationPreferences.failure !== false)
-          setNotifSchedule(user.user_metadata.notificationPreferences.schedule !== false)
-          setNotifAnalytics(!!user.user_metadata.notificationPreferences.analytics)
-        }
-
-        // Fetch connections once user is fetched
-        await fetchConnections(user.id)
+      } catch (err) {
+        console.error("Error fetching user info:", err)
       }
-    } catch (err) {
-      console.error("Error fetching user info:", err)
     }
-  }
+
+    fetchUser()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const fetchConnections = async (uid: string) => {
     try {

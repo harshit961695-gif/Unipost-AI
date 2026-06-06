@@ -19,8 +19,10 @@ export async function GET(request: NextRequest) {
     }
 
     try {
-        const notifications = await notificationService.getNotifications(user.id);
-        const unreadCount = await notificationService.unreadCount(user.id);
+        const [notifications, unreadCount] = await Promise.all([
+            notificationService.getNotifications(user.id),
+            notificationService.unreadCount(user.id)
+        ]);
 
         return NextResponse.json({
             success: true,

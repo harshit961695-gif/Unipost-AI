@@ -9,6 +9,22 @@ import { logger } from '../logger'
 import { notificationService } from './notificationService'
 import { youtubeService } from './youtube'
 
+async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = 1500): Promise<Response> {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal
+    });
+    clearTimeout(id);
+    return response;
+  } catch (error) {
+    clearTimeout(id);
+    throw error;
+  }
+}
+
 export interface PlatformMetrics {
   views: number
   likes: number
@@ -73,7 +89,7 @@ export async function fetchFacebookMetrics(
     const redactedUrl = url.replace(accessToken, 'PAGE_TOKEN_REDACTED')
     console.log(`[FB REQUEST URL] ${redactedUrl}`)
 
-    const res = await fetch(url)
+    const res = await fetchWithTimeout(url)
     const data = await res.json()
 
     console.log(`[FB RAW RESPONSE] HTTP ${res.status} for post ${fullPostId}:`, JSON.stringify(data))
@@ -97,7 +113,7 @@ export async function fetchFacebookMetrics(
         }
         
         const fallbackUrl = `https://graph.facebook.com/v25.0/${retryId}?fields=likes.summary(true),comments.summary(true)&access_token=${accessToken}`
-        const fallbackRes = await fetch(fallbackUrl)
+        const fallbackRes = await fetchWithTimeout(fallbackUrl)
         const fallbackData = await fallbackRes.json()
         
         console.log(`[FB FALLBACK RESPONSE] HTTP ${fallbackRes.status} for post ${retryId}:`, JSON.stringify(fallbackData))
@@ -142,7 +158,7 @@ export async function fetchFacebookMetrics(
     let shares = 0
     try {
       const sharesUrl = `https://graph.facebook.com/v25.0/${fullPostId}?fields=shares&access_token=${accessToken}`
-      const sharesRes = await fetch(sharesUrl)
+      const sharesRes = await fetchWithTimeout(sharesUrl)
       const sharesData = await sharesRes.json()
       if (sharesData.shares?.count) {
         shares = Number(sharesData.shares.count)
@@ -198,7 +214,7 @@ export async function fetchInstagramMetrics(
     // Step 1: Fetch basic media fields including media_type for metric selection
     const detailUrl = `https://graph.facebook.com/v25.0/${mediaId}?fields=like_count,comments_count,media_type,media_product_type&access_token=${accessToken}`
     console.log(`[IG POST FETCH] Detail URL: ${detailUrl.replace(accessToken, 'ACCESS_TOKEN_REDACTED')}`)
-    const detailRes = await fetch(detailUrl)
+    const detailRes = await fetchWithTimeout(detailUrl)
     const detailData = await detailRes.json()
 
     console.log(`[IG RESPONSE] Detail:`, JSON.stringify(detailData))
@@ -248,7 +264,7 @@ export async function fetchInstagramMetrics(
     try {
       const insightsUrl = `https://graph.facebook.com/v25.0/${mediaId}/insights?metric=${metricsToTry.join(',')}&access_token=${accessToken}`
       console.log(`[IG METRICS REQUEST] ${insightsUrl.replace(accessToken, 'ACCESS_TOKEN_REDACTED')}`)
-      const insightsRes = await fetch(insightsUrl)
+      const insightsRes = await fetchWithTimeout(insightsUrl)
       insightsData = await insightsRes.json()
 
       console.log(`[IG API RESPONSE] HTTP ${insightsRes.status}:`, JSON.stringify(insightsData))
@@ -268,7 +284,7 @@ export async function fetchInstagramMetrics(
 
         const fallbackUrl = `https://graph.facebook.com/v25.0/${mediaId}/insights?metric=${fallbackMetrics.join(',')}&access_token=${accessToken}`
         console.log(`[IG METRICS REQUEST (FALLBACK)] ${fallbackUrl.replace(accessToken, 'ACCESS_TOKEN_REDACTED')}`)
-        const fallbackRes = await fetch(fallbackUrl)
+        const fallbackRes = await fetchWithTimeout(fallbackUrl)
         insightsData = await fallbackRes.json()
         console.log(`[IG API RESPONSE (FALLBACK)] HTTP ${fallbackRes.status}:`, JSON.stringify(insightsData))
       }
@@ -279,7 +295,7 @@ export async function fetchInstagramMetrics(
         const safeMetrics = ['reach', 'saved']
         const safeUrl = `https://graph.facebook.com/v25.0/${mediaId}/insights?metric=${safeMetrics.join(',')}&access_token=${accessToken}`
         console.log(`[IG METRICS REQUEST (SAFE)] ${safeUrl.replace(accessToken, 'ACCESS_TOKEN_REDACTED')}`)
-        const safeRes = await fetch(safeUrl)
+        const safeRes = await fetchWithTimeout(safeUrl)
         insightsData = await safeRes.json()
         console.log(`[IG API RESPONSE (SAFE)] HTTP ${safeRes.status}:`, JSON.stringify(insightsData))
       }
@@ -395,7 +411,7 @@ export async function fetchYouTubeMetrics(
       const redactedUrl = url.replace(apiKey, 'GOOGLE_API_KEY_REDACTED')
       console.log(`[YT REQUEST URL] ${redactedUrl}`)
 
-      const res = await fetch(url, { cache: 'no-store' })
+      const res = await fetchWithTimeout(url, { cache: 'no-store' })
       const data = await res.json()
 
       console.log(`[YT RAW RESPONSE] HTTP ${res.status}: ${JSON.stringify(data)}`)

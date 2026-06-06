@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, useMemo } from "react"
+import { useEffect, useState, useMemo, useCallback } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
@@ -73,7 +73,7 @@ export default function AnalyticsPage() {
   // Feature 3 state: Selected post for modal detail view
   const [selectedPostForModal, setSelectedPostForModal] = useState<any>(null)
 
-  const loadData = async (isRefresh = false, targetRange = range) => {
+  const loadData = useCallback(async (isRefresh = false, targetRange = range) => {
     if (isRefresh) setRefreshing(true)
     else setLoading(true)
     
@@ -105,7 +105,7 @@ export default function AnalyticsPage() {
       setLoading(false)
       setRefreshing(false)
     }
-  }
+  }, [range])
 
   // Initial load and auto-refresh every 30 seconds
   useEffect(() => {
@@ -114,10 +114,14 @@ export default function AnalyticsPage() {
       loadData(false, range)
     }, 30000)
     return () => clearInterval(interval)
-  }, [range])
+  }, [range, loadData])
 
   // Background poller to actually TRIGGER fetch-analytics every 60s
   useEffect(() => {
+    if (process.env.NODE_ENV === 'development') {
+      console.log('[ANALYTICS] Bypassing background fetch-analytics polling in development mode');
+      return;
+    }
     const triggerFetch = async () => {
       try { await fetch('/api/fetch-analytics'); } catch (e) { }
     }
@@ -220,11 +224,11 @@ export default function AnalyticsPage() {
   };
 
   // --- Destructure and default data structures ---
-  const platforms = data?.platforms || {
+  const platforms = useMemo(() => data?.platforms || {
     facebook: { views: 0, likes: 0, comments: 0, shares: 0, reach: 0, impressions: 0, engagement: 0, count: 0 },
     instagram: { views: 0, likes: 0, comments: 0, shares: 0, reach: 0, impressions: 0, engagement: 0, count: 0 },
     youtube: { views: 0, likes: 0, comments: 0, shares: 0, reach: 0, impressions: 0, engagement: 0, count: 0 }
-  }
+  }, [data?.platforms])
 
   const totalReach = data?.merged_totals?.reach || 0;
   const totalImpressions = data?.merged_totals?.impressions || 0;

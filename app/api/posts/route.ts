@@ -65,7 +65,15 @@ export async function POST(request: NextRequest) {
 
     // Determine status
     let finalStatus = status
-    let scheduledAt = scheduled_at ? new Date(scheduled_at) : null
+    let scheduledAt = null
+
+    if (scheduled_at) {
+      const parsedDate = new Date(scheduled_at)
+      if (isNaN(parsedDate.getTime())) {
+        return NextResponse.json({ error: 'Invalid scheduled_at date format' }, { status: 400 })
+      }
+      scheduledAt = parsedDate
+    }
 
     if (scheduledAt && scheduledAt > new Date()) {
       finalStatus = 'scheduled'

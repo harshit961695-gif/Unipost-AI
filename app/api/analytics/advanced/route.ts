@@ -18,26 +18,25 @@ export async function GET(request: NextRequest) {
 
     const dateFilter = new Date(Date.now() - days * 86400000)
 
-    // 1. Fetch historical snapshots within range from analytics_daily
-    const snapshots = await prisma.analytics_daily.findMany({
-      where: { 
-        user_id: userId,
-        snapshot_date: { gte: dateFilter }
-      },
-      orderBy: { snapshot_date: 'asc' },
-    })
+    // 1. Fetch historical snapshots and post logs concurrently to reduce network latency
+    const [snapshots, postLogs] = await Promise.all([
+      prisma.analytics_daily.findMany({
+        where: { 
+          user_id: userId,
+          snapshot_date: { gte: dateFilter }
+        },
+        orderBy: { snapshot_date: 'asc' },
+      }),
+      prisma.post_logs.findMany({
+        where: { 
+          user_id: userId,
+          created_at: { gte: dateFilter }
+        },
+        orderBy: { created_at: 'desc' },
+      })
+    ]);
 
     console.log(`[ADVANCED API] Daily snapshots fetched for range ${range}: ${snapshots.length} records`)
-
-    // 2. Fetch all post logs (metrics) within range
-    const postLogs = await prisma.post_logs.findMany({
-      where: { 
-        user_id: userId,
-        created_at: { gte: dateFilter }
-      },
-      orderBy: { created_at: 'desc' },
-    })
-
     console.log(`[ADVANCED API] Post logs fetched for range ${range}: ${postLogs.length}`)
 
     // 3. Date-wise formatting (timeline analytics)
