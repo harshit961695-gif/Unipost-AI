@@ -3,6 +3,7 @@ const path = require('path');
 const { execSync } = require('child_process');
 
 const DEBOUNCE_DELAY_MS = 5000;
+const IGNORED_NAMES = new Set(['.git', 'node_modules', '.next', '.env', '.env.local', 'scripts']);
 
 function shouldIgnore(filePath) {
   if (!filePath) return true;
@@ -57,42 +58,109 @@ function runSync() {
     console.log('Executing: git push origin main');
     execSync('git push origin main', { stdio: 'inherit' });
     
-    console.log('Synchronization completed successfully!');
+    console.log(`[${new Date().toLocaleTimeString()}] Synchronization completed successfully!`);
   } catch (error) {
     console.error('Error during synchronization:', error.message);
   }
+}
+
+function getWatchTargets(baseDir) {
+  const targets = [];
+  try {
+    const items = fs.readdirSync(baseDir);
+    for (const item of items) {
+      if (IGNORED_NAMES.has(item)) continue;
+      const fullPath = path.join(baseDir, item);
+      try {
+        const stats = fs.statSync(fullPath);
+        if (stats.isDirectory()) {
+          targets.push({ path: fullPath, isDirectory: true });
+        }
+      } catch (e) {
+        // ignore files that cannot be stats'd
+      }
+    }
+  } catch (e) {
+    console.error('Error reading directory:', e.message);
+  }
+  // Also watch root itself non-recursively
+  targets.push({ path: baseDir, isDirectory: false });
+  return targets;
 }
 
 const isWatchMode = process.argv.includes('--watch');
 
 if (isWatchMode) {
   console.log('Starting AutoSync in Watch Mode...');
-  console.log(`Watching directory: ${process.cwd()}`);
-  console.log('Will push changes to "origin main" automatically after 5 seconds of inactivity.');
+  console.log(`Watching root directory: ${process.cwd()}`);
+  console.log('Pushes to "origin main" automatically after 5 seconds of inactivity.');
   
   let isSyncing = false;
   let debounceTimer = null;
+  const activeWatchers = [];
   
-  fs.watch(process.cwd(), { recursive: true }, (eventType, filename) => {
-    if (!filename) return;
-    if (shouldIgnore(filename)) return;
-    
-    if (isSyncing) return;
-    
-    if (debounceTimer) {
-      clearTimeout(debounceTimer);
+  function startWatchers() {
+    // Clear any existing watchers
+    while (activeWatchers.length > 0) {
+      const w = activeWatchers.pop();
+      try { w.close(); } catch (e) {}
     }
     
-    console.log(`[File Changed] ${filename} (${eventType}). Queueing sync...`);
-    debounceTimer = setTimeout(() => {
-      isSyncing = true;
+    const targets = getWatchTargets(process.cwd());
+    
+    for (const target of targets) {
       try {
-        runSync();
-      } finally {
-        isSyncing = false;
+        const watcher = fs.watch(
+          target.path,
+          { recursive: target.isDirectory },
+          (eventType, filename) => {
+            if (!filename) return;
+            
+            // Resolve relative path
+            let relativePath;
+            if (target.path === process.cwd()) {
+              relativePath = filename;
+            } else {
+              relativePath = path.relative(process.cwd(), path.join(target.path, filename));
+            }
+            
+            if (shouldIgnore(relativePath)) return;
+            if (isSyncing) return;
+            
+            if (debounceTimer) {
+              clearTimeout(debounceTimer);
+            }
+            
+            console.log(`[File Changed] ${relativePath} (${eventType}). Queueing sync...`);
+            
+            debounceTimer = setTimeout(() => {
+              isSyncing = true;
+              try {
+                runSync();
+              } finally {
+                isSyncing = false;
+              }
+            }, DEBOUNCE_DELAY_MS);
+          }
+        );
+        
+        watcher.on('error', (err) => {
+          console.warn(`[Watcher Warning] Watcher error on target "${target.path}":`, err.message);
+          // Restart watchers after a short delay
+          setTimeout(startWatchers, 1000);
+        });
+        
+        activeWatchers.push(watcher);
+      } catch (err) {
+        console.warn(`[Watcher Warning] Could not start watcher on "${target.path}":`, err.message);
       }
-    }, DEBOUNCE_DELAY_MS);
-  });
+    }
+  }
+  
+  startWatchers();
+  
+  // Keep the process alive indefinitely using an interval
+  setInterval(() => {}, 1000 * 60 * 60);
 } else {
   runSync();
 }
