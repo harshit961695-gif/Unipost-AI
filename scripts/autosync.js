@@ -3,8 +3,28 @@ const path = require('path');
 const { execSync } = require('child_process');
 
 const DEBOUNCE_DELAY_MS = 5000;
-const IGNORED_NAMES = new Set(['.git', 'node_modules', '.next', '.env', '.env.local', 'scripts']);
 
+// Log helper with timestamp
+function log(message, ...args) {
+  const timeStr = new Date().toLocaleTimeString();
+  console.log(`[AutoSync][${timeStr}] ${message}`, ...args);
+}
+
+function errorLog(message, ...args) {
+  const timeStr = new Date().toLocaleTimeString();
+  console.error(`[AutoSync][${timeStr}][ERROR] ${message}`, ...args);
+}
+
+// Global error handling to prevent silent crashes
+process.on('uncaughtException', (err) => {
+  errorLog('Uncaught Exception:', err.stack || err);
+});
+
+process.on('unhandledRejection', (reason) => {
+  errorLog('Unhandled Rejection:', reason);
+});
+
+// Check if a path should be ignored
 function shouldIgnore(filePath) {
   if (!filePath) return true;
   const normalizedPath = filePath.replace(/\\/g, '/');
@@ -21,26 +41,21 @@ function shouldIgnore(filePath) {
     return true;
   }
   
-  if (normalizedPath.endsWith('.log')) {
-    return true;
-  }
-  
   return false;
 }
 
 function runSync() {
-  const timeStr = new Date().toLocaleTimeString();
-  console.log(`[${timeStr}] Running sync...`);
+  log('Sync running...');
   try {
     const status = execSync('git status --porcelain', { encoding: 'utf8' }).trim();
     if (!status) {
-      console.log('No local changes detected. Skipping synchronization.');
+      log('No local changes detected. Skipping commit/push.');
       return;
     }
     
-    console.log('Detected local changes:\n' + status.split('\n').map(line => '  ' + line).join('\n'));
+    log('Detected changes:\n' + status.split('\n').map(line => '  ' + line).join('\n'));
     
-    console.log('Executing: git add .');
+    log('Executing: git add .');
     execSync('git add .', { stdio: 'inherit' });
     
     const now = new Date();
@@ -52,115 +67,80 @@ function runSync() {
       String(now.getSeconds()).padStart(2, '0');
     
     const commitMsg = `Auto sync: ${formattedDate}`;
-    console.log(`Executing: git commit -m "${commitMsg}"`);
+    log(`Executing: git commit -m "${commitMsg}"`);
     execSync(`git commit -m "${commitMsg}"`, { stdio: 'inherit' });
+    log('Commit created.');
     
-    console.log('Executing: git push origin main');
+    log('Executing: git push origin main');
     execSync('git push origin main', { stdio: 'inherit' });
+    log('Push completed.');
     
-    console.log(`[${new Date().toLocaleTimeString()}] Synchronization completed successfully!`);
+    log('Synchronization completed successfully!');
   } catch (error) {
-    console.error('Error during synchronization:', error.message);
+    errorLog('Error during synchronization:', error.message);
   }
-}
-
-function getWatchTargets(baseDir) {
-  const targets = [];
-  try {
-    const items = fs.readdirSync(baseDir);
-    for (const item of items) {
-      if (IGNORED_NAMES.has(item)) continue;
-      const fullPath = path.join(baseDir, item);
-      try {
-        const stats = fs.statSync(fullPath);
-        if (stats.isDirectory()) {
-          targets.push({ path: fullPath, isDirectory: true });
-        }
-      } catch (e) {
-        // ignore files that cannot be stats'd
-      }
-    }
-  } catch (e) {
-    console.error('Error reading directory:', e.message);
-  }
-  // Also watch root itself non-recursively
-  targets.push({ path: baseDir, isDirectory: false });
-  return targets;
 }
 
 const isWatchMode = process.argv.includes('--watch');
 
 if (isWatchMode) {
-  console.log('Starting AutoSync in Watch Mode...');
-  console.log(`Watching root directory: ${process.cwd()}`);
-  console.log('Pushes to "origin main" automatically after 5 seconds of inactivity.');
+  log('Starting AutoSync in Watch Mode...');
+  log(`Watching root directory: ${process.cwd()}`);
+  log('Pushes to "origin main" automatically after 5 seconds of inactivity.');
   
   let isSyncing = false;
   let debounceTimer = null;
-  const activeWatchers = [];
+  let watcher = null;
   
-  function startWatchers() {
-    // Clear any existing watchers
-    while (activeWatchers.length > 0) {
-      const w = activeWatchers.pop();
-      try { w.close(); } catch (e) {}
-    }
-    
-    const targets = getWatchTargets(process.cwd());
-    
-    for (const target of targets) {
-      try {
-        const watcher = fs.watch(
-          target.path,
-          { recursive: target.isDirectory },
-          (eventType, filename) => {
-            if (!filename) return;
-            
-            // Resolve relative path
-            let relativePath;
-            if (target.path === process.cwd()) {
-              relativePath = filename;
-            } else {
-              relativePath = path.relative(process.cwd(), path.join(target.path, filename));
-            }
-            
-            if (shouldIgnore(relativePath)) return;
-            if (isSyncing) return;
-            
-            if (debounceTimer) {
-              clearTimeout(debounceTimer);
-            }
-            
-            console.log(`[File Changed] ${relativePath} (${eventType}). Queueing sync...`);
-            
-            debounceTimer = setTimeout(() => {
-              isSyncing = true;
-              try {
-                runSync();
-              } finally {
-                isSyncing = false;
-              }
-            }, DEBOUNCE_DELAY_MS);
-          }
-        );
-        
-        watcher.on('error', (err) => {
-          console.warn(`[Watcher Warning] Watcher error on target "${target.path}":`, err.message);
-          // Restart watchers after a short delay
-          setTimeout(startWatchers, 1000);
-        });
-        
-        activeWatchers.push(watcher);
-      } catch (err) {
-        console.warn(`[Watcher Warning] Could not start watcher on "${target.path}":`, err.message);
+  function startWatcher() {
+    try {
+      if (watcher) {
+        try { watcher.close(); } catch (e) {}
       }
+      
+      watcher = fs.watch(process.cwd(), { recursive: true }, (eventType, filename) => {
+        if (!filename) return;
+        if (shouldIgnore(filename)) return;
+        if (isSyncing) return;
+        
+        log(`File changed: ${filename} (Event: ${eventType})`);
+        
+        if (debounceTimer) {
+          clearTimeout(debounceTimer);
+        }
+        
+        log(`Debounce started. Waiting ${DEBOUNCE_DELAY_MS / 1000} seconds of inactivity...`);
+        debounceTimer = setTimeout(() => {
+          isSyncing = true;
+          try {
+            runSync();
+          } finally {
+            isSyncing = false;
+          }
+        }, DEBOUNCE_DELAY_MS);
+      });
+      
+      watcher.on('error', (err) => {
+        errorLog('Watcher error:', err.message);
+        // Attempt to recreate the watcher after a delay
+        setTimeout(startWatcher, 1000);
+      });
+      
+      log('Watcher started successfully.');
+    } catch (err) {
+      errorLog('Failed to initialize watcher:', err.message);
+      // Attempt to retry initialization after a delay
+      setTimeout(startWatcher, 5000);
     }
   }
   
-  startWatchers();
+  startWatcher();
   
-  // Keep the process alive indefinitely using an interval
-  setInterval(() => {}, 1000 * 60 * 60);
+  // Keep the process alive persistently using a repeating interval
+  setInterval(() => {
+    log('Watcher heartbeat: Still running...');
+  }, 1000 * 60 * 10); // Log heartbeat every 10 minutes to verify activity
+  
 } else {
   runSync();
 }
