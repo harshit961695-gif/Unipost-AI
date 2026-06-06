@@ -1,0 +1,120 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model posts {
+  id                String   @id @default(uuid())
+  user_id           String
+  caption           String?
+  media_urls        String[] @default([])
+  platforms         String[] @default([])
+  status            String   @default("draft")
+  published_at      DateTime?
+  scheduled_at      DateTime?
+  facebook_post_id  String?
+  instagram_media_id String?
+  youtube_video_id  String?
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+
+  @@index([user_id])
+  @@index([status])
+  @@index([scheduled_at])
+  @@index([created_at])
+}
+
+model analytics_snapshots {
+  id                 String   @id @default(uuid())
+  user_id            String
+  platform           String
+  total_reach        Int      @default(0)
+  total_impressions  Int      @default(0)
+  total_engagement   Int      @default(0)
+  total_views        Int      @default(0)
+  total_likes        Int      @default(0)
+  total_comments     Int      @default(0)
+  snapshot_date      DateTime @default(now())
+  created_at         DateTime @default(now())
+  platform_metrics   Json?    @db.JsonB
+
+  @@index([user_id])
+  @@index([platform])
+  @@index([snapshot_date])
+  @@index([user_id, created_at])
+}
+
+model analytics_current {
+  id                 String   @id @default(uuid())
+  user_id            String   @unique
+  total_reach        Int      @default(0)
+  total_impressions  Int      @default(0)
+  total_engagement   Int      @default(0)
+  total_views        Int      @default(0)
+  total_likes        Int      @default(0)
+  total_comments     Int      @default(0)
+  updated_at         DateTime @default(now()) @updatedAt
+  platform_metrics   Json?    @db.JsonB
+
+  @@index([user_id])
+}
+
+model analytics_daily {
+  id                 String   @id @default(uuid())
+  user_id            String
+  total_reach        Int      @default(0)
+  total_impressions  Int      @default(0)
+  total_engagement   Int      @default(0)
+  total_views        Int      @default(0)
+  total_likes        Int      @default(0)
+  total_comments     Int      @default(0)
+  snapshot_date      DateTime @default(now())
+  created_at         DateTime @default(now())
+  platform_metrics   Json?    @db.JsonB
+
+  @@index([user_id])
+  @@index([snapshot_date])
+  @@unique([user_id, snapshot_date])
+}
+
+model post_logs {
+  id                String   @id @default(uuid())
+  user_id           String
+  platform          String
+  platform_post_id  String
+  content           String?
+  media_url         String?
+  views             Int      @default(0)
+  likes             Int      @default(0)
+  comments          Int      @default(0)
+  shares            Int      @default(0)
+  reach             Int      @default(0)
+  impressions       Int      @default(0)
+  engagement        Int      @default(0)
+  status            String   @default("success")
+  fetched_at        DateTime?
+  created_at        DateTime @default(now())
+
+  @@index([user_id])
+  @@index([platform])
+  @@index([platform_post_id])
+}
+
+model notifications {
+  id         String   @id @default(uuid())
+  user_id    String
+  type       String
+  title      String
+  message    String
+  metadata   Json?    @db.JsonB
+  is_read    Boolean  @default(false)
+  created_at DateTime @default(now())
+
+  @@index([user_id])
+  @@index([is_read])
+  @@index([created_at])
+}

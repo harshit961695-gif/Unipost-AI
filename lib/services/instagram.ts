@@ -39,20 +39,37 @@ export const instagramService = {
         caption: string,
         mediaType: 'REELS' | 'IMAGE'
     ) {
+        // Detect video based on file extension
+        const urlWithoutQuery = mediaUrl.split('?')[0];
+        const fileExt = urlWithoutQuery.split('.').pop()?.toLowerCase() || '';
+        const isVideo = ['mp4', 'mov'].includes(fileExt) || mediaType === 'REELS';
+
+        const finalMediaType = isVideo ? 'REELS' : 'IMAGE';
+
+        // Check file extension validation
+        if (finalMediaType === 'REELS') {
+            if (!['mp4', 'mov'].includes(fileExt)) {
+                throw new Error('Unsupported video format for Instagram Reel. Only .mp4 and .mov are supported.');
+            }
+        }
+
         // 1. Create Media Container
         const containerUrl = new URL(`https://graph.facebook.com/v19.0/${instagramId}/media`);
         containerUrl.searchParams.append('access_token', accessToken);
         containerUrl.searchParams.append('caption', caption);
 
-        if (mediaType === 'IMAGE') {
+        if (finalMediaType === 'IMAGE') {
             containerUrl.searchParams.append('image_url', mediaUrl);
-        } else if (mediaType === 'REELS') {
+        } else if (finalMediaType === 'REELS') {
             containerUrl.searchParams.append('video_url', mediaUrl);
             containerUrl.searchParams.append('media_type', 'REELS');
         }
 
         const containerRes = await fetch(containerUrl.toString(), { method: 'POST' });
         const containerData = await containerRes.json();
+
+        // Log requirement 5
+        console.log(`[INSTAGRAM]\nmedia_type=${isVideo ? 'video' : 'image'}\npost_type=${finalMediaType.toLowerCase()}\napi_endpoint_used=${containerUrl.origin}${containerUrl.pathname}\napi_response=${JSON.stringify(containerData)}`);
 
         if (!containerRes.ok || containerData.error) {
             console.error('IG Container Error:', containerData);
@@ -64,11 +81,32 @@ export const instagramService = {
         }
 
         const creationId = containerData.id;
+        console.log("IG Creation ID:", creationId);
 
         // 2. Publish Media Container
-        // For videos, Instagram spins up background processing. In production, we should poll status.
-        // For MVP, if it fails immediately, we'll throw, otherwise we assume it's queued.
-        await new Promise(r => setTimeout(r, 3000)); // Small wait for immediate errors 
+        if (finalMediaType === 'REELS') {
+            console.log(`[INSTAGRAM] Video uploaded. Polling status for creation ID: ${creationId}...`);
+            let status = 'IN_PROGRESS';
+            let attempts = 0;
+            const maxAttempts = 15; // 15 attempts * 4 seconds = 60 seconds max
+            while (status === 'IN_PROGRESS' && attempts < maxAttempts) {
+                await new Promise(r => setTimeout(r, 4000));
+                const statusUrl = `https://graph.facebook.com/v19.0/${creationId}?fields=status_code&access_token=${accessToken}`;
+                const statusRes = await fetch(statusUrl);
+                const statusData = await statusRes.json();
+                status = statusData.status_code || 'ERROR';
+                console.log(`[INSTAGRAM] Polling status attempt ${attempts + 1}: ${status}`);
+                if (status === 'ERROR' || statusData.error) {
+                    throw new Error(statusData.error?.message || 'Error processing video on Instagram');
+                }
+                attempts++;
+            }
+            if (status !== 'FINISHED') {
+                throw new Error('Video processing on Instagram timed out. Please try again later.');
+            }
+        } else {
+            await new Promise(r => setTimeout(r, 3000)); // Small wait for immediate errors for images
+        }
 
         const publishUrl = new URL(`https://graph.facebook.com/v19.0/${instagramId}/media_publish`);
         publishUrl.searchParams.append('access_token', accessToken);
@@ -76,6 +114,9 @@ export const instagramService = {
 
         const publishRes = await fetch(publishUrl.toString(), { method: 'POST' });
         const publishData = await publishRes.json();
+
+        // Log requirement 5 for publish step
+        console.log(`[INSTAGRAM]\nmedia_type=${isVideo ? 'video' : 'image'}\npost_type=${finalMediaType.toLowerCase()}\napi_endpoint_used=${publishUrl.origin}${publishUrl.pathname}\napi_response=${JSON.stringify(publishData)}`);
 
         if (!publishRes.ok || publishData.error) {
             console.error('IG Publish Error:', publishData);
@@ -86,7 +127,13 @@ export const instagramService = {
             throw new Error(errMessage);
         }
 
-        return publishData.id;
+        console.log("IG Final Post ID:", publishData.id);
+
+        if (!publishData.id) {
+            throw new Error('IG Final Post ID is missing from publish response');
+        }
+
+        return { id: String(publishData.id) };
     },
 
     /**
@@ -120,6 +167,7 @@ export const instagramService = {
         }
 
         const creationId = containerData.id;
+        console.log("IG Creation ID:", creationId);
         await new Promise(r => setTimeout(r, 3000));
 
         const publishUrl = new URL(`https://graph.facebook.com/v19.0/${instagramId}/media_publish`);
@@ -137,7 +185,14 @@ export const instagramService = {
             throw new Error(errMessage);
         }
 
-        return publishData.id;
+        console.log("IG Final Post ID:", publishData.id);
+
+        if (!publishData.id) {
+            throw new Error('IG Final Post ID is missing from publish response');
+        }
+
+        // Ensure ID is always a string (Instagram IDs are 17-18 digit numbers)
+        return { id: String(publishData.id) };
     },
 
     /**

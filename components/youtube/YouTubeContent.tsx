@@ -65,6 +65,10 @@ export function YouTubeContent() {
         setIsLoading(true)
         try {
             const response = await fetch('/api/youtube/videos')
+            if (!response.ok) {
+                const errData = await response.json().catch(() => ({}))
+                throw new Error(errData.error || `Request failed: ${response.status}`)
+            }
             const data = await response.json()
             if (data.success) {
                 setVideos(data.videos)

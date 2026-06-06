@@ -15,6 +15,7 @@ export async function GET(request: NextRequest) {
         const scopes = [
             'pages_show_list',
             'pages_manage_posts',
+            'pages_read_engagement',
             'instagram_basic',
             'instagram_content_publish',
             'business_management'
@@ -31,6 +32,6 @@ export async function GET(request: NextRequest) {
     } catch (error: any) {
         // Log error and redirect to settings with error flag
         console.error('Meta connect error:', error)
-        return NextResponse.redirect(`${process.env.NEXT_PUBLIC_APP_URL}/dashboard/settings?error=meta_connect_failed`)
+        return NextResponse.redirect(`${process.env.NEXT_PUBLIC_APP_URL}/dashboard/settings?error=meta_connect_failed&details=${encodeURIComponent(error.message)}`)
     }
 }

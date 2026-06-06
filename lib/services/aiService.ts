@@ -1,8 +1,6 @@
-import { GoogleGenAI } from '@google/genai'
-
 export const aiService = {
     /**
-     * Generate a social media caption or metadata using Gemini
+     * Generate a social media caption or metadata using Groq (llama-3.3-70b-versatile)
      */
     async generateCaption(prompt: string, type?: 'title' | 'long_desc' | 'short_desc' | 'default'): Promise<{ caption: string; fallback: boolean; message?: string }> {
         const trimmedPrompt = prompt?.trim()
@@ -16,74 +14,75 @@ export const aiService = {
             }
         }
 
-        if (!process.env.GEMINI_API_KEY) {
-            console.error('GEMINI_API_KEY is missing')
+        const apiKey = process.env.GROQ_API_KEY;
+        if (!apiKey) {
+            console.error('[GROQ ERROR] GROQ_API_KEY is missing');
             return {
                 caption: this.generateFallbackCaption(trimmedPrompt),
                 fallback: true,
-                message: 'AI configuration missing'
+                message: 'Groq API key not configured'
             }
         }
 
-        // 2. Client Initialization
-        let ai: GoogleGenAI
-        try {
-            ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY })
-        } catch (error) {
-            console.error('Failed to initialize Gemini client:', error)
-            return {
-                caption: this.generateFallbackCaption(trimmedPrompt),
-                fallback: true,
-                message: 'AI Service initialization failed'
-            }
+        // 2. Formulate Prompt
+        let fullPrompt = `Create an engaging social media caption for Instagram and YouTube based on this idea: ${trimmedPrompt}. Keep it concise, engaging, and under 220 characters.`
+        if (type === 'title') {
+            fullPrompt = `Generate a catchy YouTube video title based on this idea: ${trimmedPrompt}. Rules: Exactly 1 line, absolutely NO quotation marks, NO emojis.`
+        } else if (type === 'long_desc') {
+            fullPrompt = `Write a detailed YouTube video description based on this idea: ${trimmedPrompt}. Rules: Write approximately 150 words. Make it engaging and informative.`
+        } else if (type === 'short_desc') {
+            fullPrompt = `Write a short YouTube Shorts description based on this idea: ${trimmedPrompt}. Rules: Keep it strictly under 80 words. Make it punchy.`
         }
 
-        // 3. Generation with Retry
+        const model = 'llama-3.3-70b-versatile';
+        const requestBody = {
+            model,
+            messages: [
+                { role: 'user', content: fullPrompt }
+            ],
+            temperature: 0.7,
+            max_tokens: 1024
+        };
+
+        // 3. Call Groq API with logs
+        console.log('[GROQ REQUEST]', JSON.stringify(requestBody, null, 2));
+
         try {
-            const caption = await this.generateWithRetry(ai, trimmedPrompt, type)
-            if (caption) {
-                return { caption, fallback: false }
+            const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${apiKey}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(requestBody)
+            });
+
+            console.log('[GROQ RESPONSE] Status:', response.status);
+
+            if (!response.ok) {
+                const errText = await response.text();
+                console.error('[GROQ RESPONSE] Error body:', errText);
+                throw new Error(`Groq API returned ${response.status}: ${errText}`);
             }
-            throw new Error('Empty response from AI')
+
+            const data = await response.json();
+            const generatedText = data?.choices?.[0]?.message?.content || '';
+
+            console.log('[GROQ GENERATED]', generatedText);
+
+            if (!generatedText) {
+                throw new Error('Empty response from Groq');
+            }
+
+            return { caption: generatedText.trim(), fallback: false };
+
         } catch (error: any) {
-            console.error('AI Generation failed:', error)
+            console.error('[GROQ ERROR] AI Generation failed:', error.message || error);
             return {
                 caption: this.generateFallbackCaption(trimmedPrompt),
                 fallback: true,
-                message: 'AI generation failed, using fallback'
-            }
-        }
-    },
-
-    /**
-     * Core generation logic with 1 retry
-     */
-    async generateWithRetry(ai: GoogleGenAI, prompt: string, type: 'title' | 'long_desc' | 'short_desc' | 'default' = 'default', retryCount = 0): Promise<string | null> {
-        try {
-            let fullPrompt = `Create an engaging social media caption for Instagram and YouTube based on this idea: ${prompt}. Keep it concise, engaging, and under 220 characters.`
-
-            if (type === 'title') {
-                fullPrompt = `Generate a catchy YouTube video title based on this idea: ${prompt}. Rules: Exactly 1 line, absolutely NO quotation marks, NO emojis.`
-            } else if (type === 'long_desc') {
-                fullPrompt = `Write a detailed YouTube video description based on this idea: ${prompt}. Rules: Write approximately 150 words. Make it engaging and informative.`
-            } else if (type === 'short_desc') {
-                fullPrompt = `Write a short YouTube Shorts description based on this idea: ${prompt}. Rules: Keep it strictly under 80 words. Make it punchy.`
-            }
-
-            const response = await ai.models.generateContent({
-                model: 'gemini-2.0-flash', // Updated to latest stable model or use 'gemini-pro'
-                contents: fullPrompt,
-            })
-
-            const text = response.text
-            return text && text.trim().length > 0 ? text.trim() : null
-        } catch (error) {
-            if (retryCount === 0) {
-                console.log('Retrying AI generation...')
-                await new Promise(r => setTimeout(r, 1000))
-                return this.generateWithRetry(ai, prompt, type, 1)
-            }
-            throw error
+                message: error.message || 'AI generation failed, using fallback'
+            };
         }
     },
 

@@ -180,6 +180,7 @@ export function ReelUploader() {
                         <div className="flex-1 flex flex-col justify-end text-white pb-2 overflow-hidden">
                             <div className="flex items-center gap-2 mb-2">
                                 <div className="w-8 h-8 rounded-full overflow-hidden border border-white/20">
+                                    {/* eslint-disable-next-line @next/next/no-img-element */}
                                     <img src={`https://ui-avatars.com/api/?name=User&background=0D8ABC&color=fff`} alt="Avatar" className="w-full h-full object-cover" />
                                 </div>
                                 <span className="font-semibold text-sm drop-shadow-md">Your Page Name</span>
@@ -213,6 +214,7 @@ export function ReelUploader() {
                             </div>
                             <div className="flex flex-col items-center gap-1 mt-2">
                                 <div className="w-8 h-8 rounded-lg overflow-hidden border-2 border-white/50 animate-spin-slow">
+                                    {/* eslint-disable-next-line @next/next/no-img-element */}
                                     <img src="https://ui-avatars.com/api/?name=Audio&background=333&color=fff" className="w-full h-full object-cover" alt="Audio" />
                                 </div>
                             </div>

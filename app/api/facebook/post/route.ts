@@ -26,7 +26,8 @@ export async function POST(request: NextRequest) {
             return NextResponse.json({ success: false, error: "Facebook account not connected. Please connect in Settings." }, { status: 400 });
         }
 
-        const FB_PAGE_ID = connection.page_id;
+        // page_id is stored inside metadata JSONB, NOT as a top-level column
+        const FB_PAGE_ID = connection.metadata?.page_id || connection.page_id;
         const FB_PAGE_ACCESS_TOKEN = connection.access_token;
 
         if (!FB_PAGE_ID || !FB_PAGE_ACCESS_TOKEN) {

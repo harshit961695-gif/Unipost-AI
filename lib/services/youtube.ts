@@ -39,7 +39,7 @@ export const youtubeService = {
                     refreshToken: tokens.refresh_token || connection.refresh_token,
                     expiresAt: tokens.expiry_date ? new Date(tokens.expiry_date) : undefined,
                     metadata: connection.metadata // preserve channel info
-                });
+                }, supabase);
             }
         });
 

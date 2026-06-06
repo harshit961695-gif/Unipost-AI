@@ -1,7 +1,6 @@
 export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth } from '@/lib/auth/server';
-import { GoogleGenAI } from '@google/genai';
 
 export const runtime = 'nodejs';
 
@@ -16,11 +15,10 @@ export async function POST(request: NextRequest) {
             return NextResponse.json({ error: 'Invalid type' }, { status: 400 });
         }
 
-        if (!process.env.GEMINI_API_KEY) {
-            return NextResponse.json({ error: 'GEMINI_API_KEY is not configured' }, { status: 500 });
+        const apiKey = process.env.GROQ_API_KEY;
+        if (!apiKey) {
+            return NextResponse.json({ error: 'GROQ_API_KEY is not configured' }, { status: 500 });
         }
-
-        const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
         let prompt = '';
 
@@ -46,14 +44,41 @@ The caption should include:
 Do not wrap the caption in quotes. Just return the raw text.`;
         }
 
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: prompt,
+        const model = 'llama-3.3-70b-versatile';
+        const requestBody = {
+            model,
+            messages: [
+                { role: 'user', content: prompt }
+            ],
+            temperature: 0.7,
+            max_tokens: 1024
+        };
+
+        console.log('[GROQ REQUEST]', JSON.stringify(requestBody, null, 2));
+
+        const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${apiKey}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(requestBody)
         });
 
-        const captionText = response.text || '';
+        console.log('[GROQ RESPONSE] Status:', response.status);
 
-        return NextResponse.json({ caption: captionText });
+        if (!response.ok) {
+            const errText = await response.text();
+            console.error('[GROQ RESPONSE] Error body:', errText);
+            return NextResponse.json({ error: `Groq API returned ${response.status}: ${errText}` }, { status: 500 });
+        }
+
+        const data = await response.json();
+        const captionText = data?.choices?.[0]?.message?.content || '';
+
+        console.log('[GROQ GENERATED]', captionText);
+
+        return NextResponse.json({ caption: captionText.trim() });
 
     } catch (error: any) {
         console.error('AI Instagram Caption Error:', error);

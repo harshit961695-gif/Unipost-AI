@@ -3,12 +3,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth } from '@/lib/auth/server';
 import { instagramService } from '@/lib/services/instagram';
 import { createSupabaseServerClient } from '@/lib/supabase/server';
+import prisma from '@/lib/prisma';
 
 export const runtime = 'nodejs';
 
 export async function POST(request: NextRequest) {
+    let user: any;
     try {
-        const user = await requireAuth(request);
+        user = await requireAuth(request);
         const formData = await request.formData();
 
         const mediaFile = formData.get('media') as File;
@@ -44,19 +46,40 @@ export async function POST(request: NextRequest) {
             .getPublicUrl(filePath);
 
         // 3. Publish to Instagram
-        let creationId;
+        let responseObj;
         try {
+            const isVideo = mediaFile.type.startsWith('video') || ['.mp4', '.mov'].some(ext => mediaFile.name.toLowerCase().endsWith(ext));
             if (type === 'story') {
-                const mediaType = mediaFile.type.startsWith('image') ? 'IMAGE' : 'VIDEO';
-                creationId = await instagramService.publishStory(instagramId, accessToken, publicUrl, mediaType);
+                const storyMediaType = isVideo ? 'VIDEO' : 'IMAGE';
+                responseObj = await instagramService.publishStory(instagramId, accessToken, publicUrl, storyMediaType);
             } else {
-                const mediaType = type === 'reel' ? 'REELS' : 'IMAGE';
-                creationId = await instagramService.publishMedia(instagramId, accessToken, publicUrl, caption, mediaType);
+                const mediaType = (type === 'reel' || isVideo) ? 'REELS' : 'IMAGE';
+                responseObj = await instagramService.publishMedia(instagramId, accessToken, publicUrl, caption, mediaType);
             }
         } catch (igError: any) {
             // Clean up temp file on failure
             await supabase.storage.from('instagram_media').remove([filePath]);
             throw igError;
+        }
+
+        const creationId = responseObj?.id;
+
+        // Save to post_logs so analytics can track this Instagram post
+        if (creationId) {
+            try {
+                await prisma.post_logs.create({
+                    data: {
+                        user_id: user.id,
+                        platform: 'instagram',
+                        platform_post_id: String(creationId),
+                        status: 'published',
+                        content: caption || '',
+                    }
+                });
+                console.log(`[IG PUBLISH] Saved post_log with platform_post_id: ${creationId}`);
+            } catch (logErr: any) {
+                console.error(`[IG PUBLISH] Failed to save post_log:`, logErr.message);
+            }
         }
 
         // 4. Clean up temp file on success
@@ -74,9 +97,6 @@ export async function POST(request: NextRequest) {
             const parsedError = JSON.parse(errorMessage);
             if (parsedError.type === 'APP_DELETED') {
                 try {
-                    // Attempt to pre-fetch user again in case `user` variable is out of scope 
-                    // (though it shouldn't be here since it was assigned line 10)
-                    const user = await requireAuth(request);
                     const supabase = createSupabaseServerClient();
 
                     console.log(`[INSTAGRAM PUBLISH] App deleted detected. Dropping legacy DB connections for user ${user.id}`);

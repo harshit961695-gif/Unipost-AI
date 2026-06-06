@@ -344,3 +344,9 @@
 [2026-02-26T19:34:01.663Z] [YOUTUBE PUBLISH] Parsed metadata - Title: "🚀 bgf... #content #socialmedia #update", Privacy: public, Video Size: 3537260 bytes
 [2026-02-26T19:34:01.668Z] [YOUTUBE PUBLISH] Dispatching to youtubeService. uploadVideo starting...
 [2026-02-26T19:34:05.826Z] [YOUTUBE PUBLISH] Upload complete. Video Data: {"kind":"youtube#video","etag":"zJiD8oE20CCd0VtNiL4XSSmGw00","id":"7zLVhyDwEdM","snippet":{"publishedAt":"2026-02-26T19:34:02Z","channelId":"UC8b-Uvu0eOLIkKcLfbgLYRw","title":"🚀 bgf... #content #socialmedia #update","description":"✨ hgfbv... #content #socialmedia #update","thumbnails":{"default":{"url":"https://i.ytimg.com/vi/7zLVhyDwEdM/default.jpg","width":120,"height":90},"medium":{"url":"https://i.ytimg.com/vi/7zLVhyDwEdM/mqdefault.jpg","width":320,"height":180},"high":{"url":"https://i.ytimg.com/vi/7zLVhyDwEdM/hqdefault.jpg","width":480,"height":360}},"channelTitle":"Harshit K. Soni","categoryId":"22","liveBroadcastContent":"none","localized":{"title":"🚀 bgf... #content #socialmedia #update","description":"✨ hgfbv... #content #socialmedia #update"}},"status":{"uploadStatus":"uploaded","privacyStatus":"public","license":"youtube","embeddable":true,"publicStatsViewable":true,"selfDeclaredMadeForKids":false}}
+[2026-06-04T07:01:17.617Z] 
+=======================================
+[2026-06-04T07:01:17.628Z] [BACKEND] ENTERING /api/publish/youtube
+[2026-06-04T07:01:17.629Z] =======================================
+[2026-06-04T07:01:17.630Z] [BACKEND] Checking Supabase user session...
+[2026-06-04T07:01:17.646Z] [BACKEND] Unauthorized access attempt: No active session found.

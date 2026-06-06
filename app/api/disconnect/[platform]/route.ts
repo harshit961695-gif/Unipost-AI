@@ -55,8 +55,8 @@ export async function DELETE(
         if (platform === 'facebook' || platform === 'instagram') {
             console.log(`[DISCONNECT] Revoking Meta token for platform: ${platform}`)
 
-            // We stored the specific page ID as a top-level column during connection:
-            const pageId = connection.page_id
+            // page_id is stored inside metadata JSONB, NOT as a top-level column
+            const pageId = connection.metadata?.page_id || connection.page_id
             const targetId = pageId || 'me' // default to 'me' if no page id
 
             try {

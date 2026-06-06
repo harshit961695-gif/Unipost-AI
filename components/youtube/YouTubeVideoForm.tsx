@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useState, useRef } from 'react'
+import React, { useState, useRef, useEffect } from 'react'
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
@@ -28,6 +28,7 @@ export function YouTubeVideoForm() {
                 alert('Please select a valid video file.')
                 return
             }
+            setVideoPreviewUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null })
             setVideoFile(file)
             setVideoPreviewUrl(URL.createObjectURL(file))
         }
@@ -40,10 +41,18 @@ export function YouTubeVideoForm() {
                 alert('Please select a valid image file.')
                 return
             }
+            setThumbnailPreviewUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null })
             setThumbnailFile(file)
             setThumbnailPreviewUrl(URL.createObjectURL(file))
         }
     }
+
+    useEffect(() => {
+        return () => {
+            setVideoPreviewUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null })
+            setThumbnailPreviewUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null })
+        }
+    }, [])
 
     const generateAIText = async (type: 'title' | 'long_desc') => {
         setAiGenerating(true)

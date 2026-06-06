@@ -1,140 +1,146 @@
 export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth } from '@/lib/auth/server';
-import { createSupabaseServerClient } from '@/lib/supabase/server';
+import prisma from '@/lib/prisma';
+import { createClient } from '@supabase/supabase-js';
 
 export const runtime = 'nodejs';
 
 export async function GET(request: NextRequest) {
     try {
         const user = await requireAuth(request);
-        const supabase = createSupabaseServerClient();
+        const userId = user.id;
 
-        console.log(`[DASHBOARD STATS] Verified User ID: ${user.id}`);
+        console.log(`[DASHBOARD STATS] Verified User ID: ${userId}`);
 
-        // 1. Fetch connected accounts
-        const { data: accounts, error: accountsError } = await supabase
+        const supabase = createClient(
+            process.env.NEXT_PUBLIC_SUPABASE_URL || '',
+            process.env.SUPABASE_SERVICE_ROLE_KEY || '',
+            { auth: { persistSession: false, autoRefreshToken: false } }
+        );
+
+        // 1. Connected accounts (Only in Supabase)
+        const { data: accounts, error: accErr } = await supabase
             .from('connected_accounts')
-            .select('platform, id')
-            .eq('user_id', user.id)
-            .neq('access_token', '');
-
-        if (accountsError) throw accountsError;
-
-        console.log(`[DASHBOARD STATS] Found ${accounts?.length || 0} active connections for user.`);
-
-        const hasAccounts = accounts && accounts.length > 0;
-        const connectedPlatforms = Array.from(new Set((accounts || []).map(a => a.platform)));
-
-        // 2. Fetch all posts for the user
-        let posts: any[] = [];
-        const { data: postsData, error: postsError } = await supabase
-            .from('posts')
             .select('*')
-            .eq('user_id', user.id)
-            .order('created_at', { ascending: false });
+            .eq('user_id', userId);
 
-        if (postsError) {
-            if (postsError.code !== '42P01') throw postsError;
-            console.warn("[DASHBOARD STATS] 'posts' table not found yet (PGRST205/42P01). Assuming 0 posts.");
-        } else if (postsData) {
-            posts = postsData;
+        console.log(`[DASHBOARD STATS] connected_accounts query:`, { count: accounts?.length, error: accErr?.message });
+
+        // 2. All posts from post_logs via Prisma (Neon)
+        let allPosts: any[] = [];
+        try {
+            allPosts = await prisma.post_logs.findMany({
+                where: { user_id: userId },
+                orderBy: { created_at: 'desc' }
+            });
+        } catch (prismaErr: any) {
+            console.error('[DASHBOARD STATS] Neon post_logs fetch failed:', prismaErr.message);
         }
 
-        const totalPosts = posts.length;
-        const recentPosts = posts.slice(0, 5);
+        console.log(`[DASHBOARD STATS] post_logs query:`, { count: allPosts.length });
 
-        // 3. Fetch analytics for the user's posts
-        // Determine post IDs to filter
-        const postIds = posts ? posts.map(p => p.id) : [];
+        const successPosts = allPosts.filter(p => p.status === 'success' || p.status === 'published').length;
+        const totalPosts = successPosts; // Only successful posts count as Total Posts under Rule 6
+        const failedPosts = allPosts.filter(p => p.status === 'failed' || p.status === 'failure').length;
+        const recentPosts = allPosts.slice(0, 8);
 
-        let analytics = [];
-        if (postIds.length > 0) {
-            const { data: analyticsData, error: analyticsError } = await supabase
-                .from('post_analytics')
-                .select('*')
-                .in('post_id', postIds);
+        // Aggregate live totals directly from post_logs (allPosts)
+        const totalViews = allPosts.reduce((sum, p) => sum + (p.views || 0), 0);
+        const totalLikes = allPosts.reduce((sum, p) => sum + (p.likes || 0), 0);
+        const totalComments = allPosts.reduce((sum, p) => sum + (p.comments || 0), 0);
+        const totalReach = allPosts.reduce((sum, p) => sum + (p.reach || 0), 0);
+        const totalImpressions = allPosts.reduce((sum, p) => sum + (p.impressions || 0), 0);
+        const totalEngagement = allPosts.reduce((sum, p) => sum + (p.engagement || 0), 0);
 
-            if (analyticsError && analyticsError.code !== '42P01') {
-                // Ignore relation does not exist if table isn't fully set up yet
-                console.error("Analytics Error:", analyticsError);
-            } else if (analyticsData) {
-                analytics = analyticsData;
-            }
-        }
+        // Derive connected platforms from BOTH connected_accounts AND post_logs
+        const platformsFromAccounts = (accounts || []).map(a => a.platform?.toLowerCase()).filter(Boolean);
+        const platformsFromPosts = [...new Set(allPosts.map(p => p.platform?.toLowerCase()).filter(Boolean))];
+        const connectedPlatforms = [...new Set([...platformsFromAccounts, ...platformsFromPosts])];
 
-        // 4. Calculate core metrics
-        let totalReach = 0;
-        let totalImpressions = 0;
-        let totalEngagement = 0;
+        // If we have connected_accounts OR posts, user has accounts
+        const hasAccounts = connectedPlatforms.length > 0;
 
-        // Platform breakdown
-        const platformStats: Record<string, { posts: number; reach: number; impressions: number; engagement: number; likes: number; comments: number; shares: number }> = {};
+        console.log(`[DASHBOARD STATS] hasAccounts: ${hasAccounts}, platforms: ${connectedPlatforms}`);
 
-        // Initialize connected platforms
+        // 3. Platform breakdown from post_logs
+        const platformStats: Record<string, any> = {};
         connectedPlatforms.forEach(p => {
-            platformStats[p] = { posts: 0, reach: 0, impressions: 0, engagement: 0, likes: 0, comments: 0, shares: 0 };
+            platformStats[p] = { posts: 0, success: 0, views: 0, likes: 0, comments: 0, reach: 0, impressions: 0, engagement: 0 };
         });
 
-        // Group posts by platform (Assuming posts have a 'platform' column or similar indicator. If not, we map through analytics platform)
-        posts?.forEach(post => {
-            // Rough generic handling if post platform isn't directly a column, but usually it is.
-            const p = post.platform || 'General';
+        allPosts.forEach(post => {
+            const p = (post.platform || '').toLowerCase();
             if (!platformStats[p]) {
-                platformStats[p] = { posts: 0, reach: 0, impressions: 0, engagement: 0, likes: 0, comments: 0, shares: 0 };
+                platformStats[p] = { posts: 0, success: 0, views: 0, likes: 0, comments: 0, reach: 0, impressions: 0, engagement: 0 };
             }
-            platformStats[p].posts += 1;
-        });
-
-        analytics.forEach((a: any) => {
-            // Depending on schema, a.platform might represent the specific analytics record platform
-            const p = a.platform || 'General';
-
-            totalReach += Number(a.reach || 0);
-            totalImpressions += Number(a.impressions || 0);
-
-            const likes = Number(a.likes || 0);
-            const comments = Number(a.comments || 0);
-            const shares = Number(a.shares || 0);
-            const engagements = likes + comments + shares;
-
-            totalEngagement += engagements;
-
-            if (platformStats[p]) {
-                platformStats[p].reach += Number(a.reach || 0);
-                platformStats[p].impressions += Number(a.impressions || 0);
-                platformStats[p].likes += likes;
-                platformStats[p].comments += comments;
-                platformStats[p].shares += shares;
-                platformStats[p].engagement += engagements;
+            const isSuccessful = post.status === 'success' || post.status === 'published';
+            if (isSuccessful) {
+                platformStats[p].posts += 1;
+                platformStats[p].success += 1;
+                platformStats[p].views += (post.views || 0);
+                platformStats[p].likes += (post.likes || 0);
+                platformStats[p].comments += (post.comments || 0);
+                platformStats[p].reach += (post.reach || 0);
+                platformStats[p].impressions += (post.impressions || 0);
+                platformStats[p].engagement += (post.engagement || 0);
             }
         });
 
-        const engagementRate = totalImpressions > 0
-            ? ((totalEngagement / totalImpressions) * 100).toFixed(1)
-            : 0;
+        // 4. Latest analytics snapshot via analytics_current with fallback (Neon)
+        let latestSnap: any = null;
+        try {
+            const currentStats = await prisma.analytics_current.findUnique({
+                where: { user_id: userId }
+            });
+            if (currentStats) {
+                latestSnap = {
+                    ...currentStats,
+                    snapshot_date: currentStats.updated_at
+                };
+            } else {
+                latestSnap = await prisma.analytics_snapshots.findFirst({
+                    where: { user_id: userId },
+                    orderBy: { created_at: 'desc' }
+                });
+            }
+        } catch (prismaErr: any) {
+            console.error('[DASHBOARD STATS] Neon analytics_current fetch failed:', prismaErr.message);
+        }
+
+        // 5. Snapshot count via Prisma (Neon)
+        let snapCount = 0;
+        try {
+            snapCount = await prisma.analytics_snapshots.count({
+                where: { user_id: userId }
+            });
+        } catch (prismaErr: any) {
+            console.error('[DASHBOARD STATS] Neon snapshot count failed:', prismaErr.message);
+        }
 
         return NextResponse.json({
             success: true,
             hasAccounts,
             connectedPlatforms,
-            metrics: {
-                totalPosts,
-                totalReach,
-                totalImpressions,
-                totalEngagement,
-                engagementRate: Number(engagementRate)
-            },
+            totalPosts,
+            successPosts,
+            failedPosts,
+            totalAttempts: successPosts + failedPosts,
             platformStats,
             recentPosts,
-            lastUpdated: new Date().toISOString()
-        }, { status: 200 });
+            latestSnapshot: latestSnap || null,
+            snapshotCount: snapCount || 0,
+            lastUpdated: new Date().toISOString(),
+            totalViews,
+            totalLikes,
+            totalComments,
+            totalReach,
+            totalImpressions,
+            totalEngagement
+        });
 
     } catch (error: any) {
         console.error('Dashboard Stats API Error:', error);
-        return NextResponse.json(
-            { error: error.message || 'Failed to fetch dashboard stats' },
-            { status: 500 }
-        );
+        return NextResponse.json({ error: error.message || 'Failed to fetch dashboard stats' }, { status: 500 });
     }
 }

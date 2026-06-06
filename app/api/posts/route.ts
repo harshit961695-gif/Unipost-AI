@@ -2,10 +2,12 @@ export const dynamic = 'force-dynamic'
 /**
  * Posts API Route
  * Handles: GET (list posts), POST (create/save draft)
+ * 
+ * Migrated to Prisma (Neon) — the single source of truth for posts.
  */
 import { NextRequest, NextResponse } from 'next/server'
 import { requireAuth } from '@/lib/auth/server'
-import { supabaseService } from '@/lib/services/supabaseService'
+import prisma from '@/lib/prisma'
 
 export const runtime = 'nodejs'
 
@@ -22,15 +24,15 @@ export async function GET(request: NextRequest) {
     const limit = parseInt(searchParams.get('limit') || '50')
     const offset = parseInt(searchParams.get('offset') || '0')
 
-    const { data: posts, error } = await supabaseService.getPosts(user.id, {
-      status,
-      limit,
-      offset
+    const posts = await prisma.posts.findMany({
+      where: {
+        user_id: user.id,
+        ...(status ? { status } : {}),
+      },
+      orderBy: { created_at: 'desc' },
+      take: limit,
+      skip: offset,
     })
-
-    if (error) {
-      return NextResponse.json({ error: 'Failed to fetch posts' }, { status: 500 })
-    }
 
     return NextResponse.json({ posts })
   } catch (error: any) {
@@ -50,7 +52,7 @@ export async function POST(request: NextRequest) {
   try {
     const user = await requireAuth(request)
     const body = await request.json()
-    const { caption, platforms, title, media_urls, scheduled_at, status = 'draft' } = body
+    const { caption, platforms, media_urls, scheduled_at, status = 'draft' } = body
 
     // Validation
     if (!caption?.trim()) {
@@ -71,31 +73,20 @@ export async function POST(request: NextRequest) {
       scheduledAt = null
     }
 
-    // Create post
-    const { data: post, error } = await supabaseService.createPost({
-      user_id: user.id,
-      title: title || null,
-      caption: caption.trim(),
-      media_urls: media_urls || [],
-      platforms,
-      status: finalStatus,
-      scheduled_at: scheduledAt?.toISOString() || null,
-      published_at: finalStatus === 'published' ? new Date().toISOString() : null,
-      metadata: {},
+    // Create post in Neon via Prisma
+    const post = await prisma.posts.create({
+      data: {
+        user_id: user.id,
+        caption: caption.trim(),
+        media_urls: media_urls || [],
+        platforms,
+        status: finalStatus,
+        scheduled_at: scheduledAt,
+        published_at: finalStatus === 'published' ? new Date() : null,
+      }
     })
 
-    if (error) {
-      return NextResponse.json({ error: 'Failed to create post' }, { status: 500 })
-    }
-
-    // Async log (don't await)
-    supabaseService.logPostAction({
-      post_id: post.id,
-      user_id: user.id,
-      action: 'post_created',
-      status_after: finalStatus,
-      message: `Post ${finalStatus}`
-    })
+    console.log(`[POSTS API] Created post ${post.id} (status: ${finalStatus}) via Prisma`)
 
     return NextResponse.json({ post }, { status: 201 })
   } catch (error: any) {

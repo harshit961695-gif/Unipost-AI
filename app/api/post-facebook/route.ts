@@ -51,13 +51,19 @@ export async function POST(request: NextRequest) {
         });
 
         const fbData = await fbResponse.json();
+        console.log(`[FB PUBLISH] Raw API response:`, JSON.stringify(fbData));
 
         if (!fbResponse.ok || fbData.error) {
             console.error('Facebook Graph API Error:', fbData.error);
             throw new Error(fbData.error?.message || 'Failed to post to Facebook');
         }
 
-        return NextResponse.json({ success: true, postId: fbData.id });
+        // Prefer post_id (compound pageId_postId) for photos — it's queryable for engagement.
+        // For feed text posts, only fbData.id is returned.
+        const savedPostId = String(fbData.post_id || fbData.id);
+        console.log(`[FB PUBLISH] Saved facebook post ID: ${savedPostId}`);
+
+        return NextResponse.json({ success: true, postId: savedPostId });
 
     } catch (error: any) {
         console.error('Publish Facebook API Error:', error);

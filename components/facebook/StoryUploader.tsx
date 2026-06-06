@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Image as ImageIcon, History, Layers } from "lucide-react"
@@ -13,10 +13,15 @@ export function StoryUploader() {
     const handleMediaChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         if (e.target.files && e.target.files[0]) {
             const file = e.target.files[0]
+            setImagePreviewUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null })
             setImageFile(file)
             setImagePreviewUrl(URL.createObjectURL(file))
         }
     }
+
+    useEffect(() => {
+        return () => { setImagePreviewUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null }) }
+    }, [])
 
     const handlePublish = async () => {
         if (!imageFile) return alert('Media is required.')

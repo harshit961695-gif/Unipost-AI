@@ -1,8 +1,9 @@
 "use client"
 
-import { Bell, Search, User } from "lucide-react"
+import { Search, User } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
+import { NotificationBell } from "./notification-bell"
 
 export function Header() {
   return (
@@ -19,10 +20,7 @@ export function Header() {
           </div>
         </div>
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" className="relative">
-            <Bell className="h-5 w-5" />
-            <span className="absolute top-1 right-1 h-2 w-2 rounded-full bg-neon-cyan"></span>
-          </Button>
+          <NotificationBell />
           <Button variant="ghost" size="icon">
             <User className="h-5 w-5" />
           </Button>
@@ -31,3 +29,4 @@ export function Header() {
     </header>
   )
 }
+

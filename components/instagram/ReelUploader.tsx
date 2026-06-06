@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
@@ -20,10 +20,15 @@ export function ReelUploader() {
                 alert('Please select a valid video file.')
                 return
             }
+            setVideoPreviewUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null })
             setVideoFile(file)
             setVideoPreviewUrl(URL.createObjectURL(file))
         }
     }
+
+    useEffect(() => {
+        return () => { setVideoPreviewUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null }) }
+    }, [])
 
     const handlePublish = async () => {
         if (!videoFile) return alert('Video is required.')

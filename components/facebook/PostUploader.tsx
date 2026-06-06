@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
@@ -20,10 +20,15 @@ export function PostUploader() {
                 alert('Please select a valid image file.')
                 return
             }
+            setImagePreviewUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null })
             setImageFile(file)
             setImagePreviewUrl(URL.createObjectURL(file))
         }
     }
+
+    useEffect(() => {
+        return () => { setImagePreviewUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null }) }
+    }, [])
 
     const handlePublish = async () => {
         if (!imageFile) return alert('Image is required.')
@@ -115,6 +120,7 @@ export function PostUploader() {
                     {/* Post Header */}
                     <div className="flex items-center gap-3 p-4">
                         <div className="w-10 h-10 rounded-full bg-zinc-700 overflow-hidden ring-1 ring-border">
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
                             <img src={`https://ui-avatars.com/api/?name=User&background=0D8ABC&color=fff`} alt="Avatar" className="w-full h-full object-cover" />
                         </div>
                         <div className="flex flex-col">
@@ -135,6 +141,7 @@ export function PostUploader() {
                     {/* Post Image */}
                     <div className="w-full min-h-[250px] bg-zinc-900 flex items-center justify-center overflow-hidden">
                         {imagePreviewUrl ? (
+                            // eslint-disable-next-line @next/next/no-img-element
                             <img src={imagePreviewUrl} alt="Preview" className="w-full h-auto object-cover max-h-[500px]" />
                         ) : (
                             <ImageIcon className="w-12 h-12 text-zinc-600" />

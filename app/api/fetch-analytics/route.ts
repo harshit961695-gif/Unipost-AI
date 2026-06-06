@@ -1,232 +1,359 @@
 export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import prisma from '@/lib/prisma';
+import { fetchFacebookMetrics, fetchInstagramMetrics, fetchYouTubeMetrics } from '@/lib/services/analyticsService';
+import { logger } from '@/lib/logger';
+import { notificationService } from '@/lib/services/notificationService';
 
 export const runtime = 'nodejs';
-// Need longer max duration for cron potentially. Vercel hobby limits to 10s or 60s, Pro 300s.
-export const maxDuration = 60; // Set to 60s as a safe baseline
+export const maxDuration = 60;
 
 export async function GET(request: NextRequest) {
-    try {
-        // 1. Authenticate the Cron Request
-        // --- TEMPORARILY DISABLED FOR LOCAL DEBUGGING ---
-        // const authHeader = request.headers.get('authorization');
-        // if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-        //     console.error('[CRON ERROR] Unauthorized attempt to run fetch-analytics');
-        //     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-        // }
-        // ------------------------------------------------
+  try {
+    const authHeader = request.headers.get('authorization');
+    const cronSecret = process.env.CRON_SECRET;
+    const isDevBypass = process.env.BYPASS_AUTH_FOR_TESTING === 'true';
 
-        console.log(`[CRON LOG] Starting global granular analytics fetch...`);
-
-        // 2. Initialize Service Role Supabase Client to bypass RLS
-        const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-        const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-        if (!supabaseUrl || !supabaseServiceKey) {
-            throw new Error('Missing Supabase Environment Variables for Cron execution');
-        }
-
-        const supabase = createClient(supabaseUrl, supabaseServiceKey, {
-            auth: { persistSession: false, autoRefreshToken: false }
-        });
-
-        // 3. Fetch all active connected accounts across the entire platform
-        const { data: accounts, error: accountsError } = await supabase
-            .from('connected_accounts')
-            .select('*')
-            .neq('access_token', '');
-
-        if (accountsError) throw accountsError;
-        const allConnectedAccounts = accounts || [];
-
-        if (allConnectedAccounts.length === 0) {
-            console.log('[CRON LOG] No connected accounts found globally.');
-            return NextResponse.json({ success: true, processed_users: 0, platforms_checked: [] });
-        }
-
-        // Group accounts by user_id
-        const usersAccountsMap: Record<string, any[]> = {};
-        allConnectedAccounts.forEach(acc => {
-            if (!usersAccountsMap[acc.user_id]) usersAccountsMap[acc.user_id] = [];
-            usersAccountsMap[acc.user_id].push(acc);
-        });
-
-        const userIds = Object.keys(usersAccountsMap);
-        let processedUsersCount = 0;
-        const platformsChecked = new Set<string>();
-
-        // 4. Fetch all successful post logs globally
-        const { data: posts, error: postsError } = await supabase
-            .from('post_logs')
-            .select('*')
-            .in('user_id', userIds)
-            .eq('status', 'success')
-            .not('platform_post_id', 'is', null);
-
-        if (postsError) throw postsError;
-        const allPostLogs = posts || [];
-
-        // Group post logs by user_id
-        const usersPostLogsMap: Record<string, any[]> = {};
-        allPostLogs.forEach(post => {
-            if (!usersPostLogsMap[post.user_id]) usersPostLogsMap[post.user_id] = [];
-            usersPostLogsMap[post.user_id].push(post);
-        });
-
-        // 5. Process EACH user independently
-        for (const userId of userIds) {
-            try {
-                const userAccounts = usersAccountsMap[userId];
-                const userPostLogs = usersPostLogsMap[userId] || [];
-
-                if (userPostLogs.length === 0) continue; // Skip if no successful posts
-
-                // Map tokens for this user
-                const tokenMap: Record<string, string> = {};
-                userAccounts.forEach(acc => {
-                    tokenMap[acc.platform] = acc.access_token;
-                    platformsChecked.add(acc.platform);
-                });
-
-                let totalReach = 0;
-                let totalImpressions = 0;
-                let totalEngagement = 0;
-                let totalViews = 0;
-                let totalLikes = 0;
-                let totalComments = 0;
-
-                // Process all posts for this user
-                const promises = userPostLogs.map(async (post) => {
-                    const platform = post.platform;
-                    const postId = post.platform_post_id;
-                    const token = tokenMap[platform];
-
-                    if (!token || !postId) return;
-
-                    try {
-                        if (platform === 'facebook') {
-                            // Fetch FB Post Insights
-                            const url = `https://graph.facebook.com/v25.0/${postId}/insights?metric=post_impressions,post_impressions_unique,post_engaged_users&access_token=${token}`;
-                            const res = await fetch(url);
-                            const data = await res.json();
-
-                            if (!data.error) {
-                                data.data?.forEach((insight: any) => {
-                                    const val = insight.values?.[0]?.value || 0;
-                                    if (insight.name === 'post_impressions') totalImpressions += val;
-                                    if (insight.name === 'post_impressions_unique') totalReach += val;
-                                    if (insight.name === 'post_engaged_users') totalEngagement += val;
-                                });
-                            }
-
-                            // Fetch likes and comments count
-                            const engagementsUrl = `https://graph.facebook.com/v25.0/${postId}?fields=likes.summary(true),comments.summary(true)&access_token=${token}`;
-                            const engRes = await fetch(engagementsUrl);
-                            const engData = await engRes.json();
-
-                            const postLikes = engData.likes?.summary?.total_count || 0;
-                            const postComments = engData.comments?.summary?.total_count || 0;
-
-                            totalLikes += postLikes;
-                            totalComments += postComments;
-
-                        } else if (platform === 'instagram') {
-                            // Fetch IG Media Insights
-                            const url = `https://graph.facebook.com/v25.0/${postId}/insights?metric=impressions,reach,engagement,saved,video_views&access_token=${token}`;
-                            const res = await fetch(url);
-                            const data = await res.json();
-
-                            let foundMetric = false;
-
-                            if (data.data) {
-                                data.data.forEach((insight: any) => {
-                                    const val = insight.values?.[0]?.value || 0;
-                                    if (insight.name === 'impressions') { totalImpressions += val; foundMetric = true; }
-                                    if (insight.name === 'reach') { totalReach += val; foundMetric = true; }
-                                    if (insight.name === 'engagement') { totalEngagement += val; foundMetric = true; }
-                                });
-                            }
-
-                            // Fallback to basic fields if insights fail
-                            const basicUrl = `https://graph.facebook.com/v25.0/${postId}?fields=like_count,comments_count,media_type&access_token=${token}`;
-                            const basicRes = await fetch(basicUrl);
-                            const basicData = await basicRes.json();
-
-                            const postLikes = basicData.like_count || 0;
-                            const postComments = basicData.comments_count || 0;
-
-                            totalLikes += postLikes;
-                            totalComments += postComments;
-
-                            if (!foundMetric) {
-                                totalEngagement += (postLikes + postComments);
-                            }
-
-                        } else if (platform === 'youtube') {
-                            // Fetch YT Video Stats
-                            const url = `https://youtube.googleapis.com/youtube/v3/videos?part=statistics&id=${postId}`;
-                            const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-                            const data = await res.json();
-
-                            if (data.items && data.items.length > 0) {
-                                const stats = data.items[0].statistics;
-                                const views = Number(stats.viewCount || 0);
-                                const likes = Number(stats.likeCount || 0);
-                                const comments = Number(stats.commentCount || 0);
-
-                                totalViews += views;
-                                totalLikes += likes;
-                                totalComments += comments;
-
-                                totalImpressions += views;
-                                totalReach += views;
-                                totalEngagement += (likes + comments);
-                            }
-                        }
-                    } catch (err: any) {
-                        console.error(`[CRON LOG] Error fetching per-post analytics for user ${userId}, ${platform} post ${postId}:`, err);
-                    }
-                });
-
-                // Wait for all posts for this user to resolve
-                await Promise.allSettled(promises);
-
-                // Insert into analytics_snapshots for this individual user
-                const { error: insertError } = await supabase
-                    .from('analytics_snapshots')
-                    .insert({
-                        user_id: userId,
-                        total_reach: totalReach,
-                        total_impressions: totalImpressions,
-                        total_engagement: totalEngagement,
-                        total_views: totalViews,
-                        total_likes: totalLikes,
-                        total_comments: totalComments
-                        // snapshot_date defaults to NOW() via Postgres constraint
-                    });
-
-                if (insertError) {
-                    console.error(`[CRON LOG] DB Insert Error for user ${userId}:`, insertError);
-                } else {
-                    processedUsersCount++;
-                }
-            } catch (userErr) {
-                console.error(`[CRON LOG] Failed processing user ${userId}:`, userErr);
-                // Keep processing other users even if one fails
-            }
-        } // end foreach user
-
-        console.log(`[CRON LOG] Global fetch complete. Processed ${processedUsersCount} users.`);
-
-        return NextResponse.json({
-            success: true,
-            processed_users: processedUsersCount,
-            platforms_checked: Array.from(platformsChecked)
-        });
-
-    } catch (error: any) {
-        console.error('[CRON LOG] Fatal Error:', error);
-        return NextResponse.json({ error: error.message || 'Failed to execute cron analytics fetch' }, { status: 500 });
+    if (!isDevBypass || authHeader) {
+      if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      }
     }
+
+    console.log('[FETCH START] ===== ANALYTICS FETCH STARTING =====');
+    console.log('[FETCH] Timestamp:', new Date().toISOString());
+
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+    if (!supabaseUrl || !supabaseServiceKey) throw new Error('Missing Supabase env vars');
+
+    const supabase = createClient(supabaseUrl, supabaseServiceKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+
+    // STEP 1 — Get all connected accounts
+    const { data: accounts, error: accErr } = await supabase
+      .from('connected_accounts').select('*').neq('access_token', '');
+    if (accErr) throw accErr;
+    const allAccounts = accounts || [];
+    console.log(`[FETCH] Connected accounts: ${allAccounts.length}`);
+    if (allAccounts.length === 0) return NextResponse.json({ success: true, message: 'No connected accounts' });
+
+    // STEP 2 — Get post_logs from Neon (Prisma — sole owner)
+    let neonLogs: any[] = [];
+    try {
+      neonLogs = await prisma.post_logs.findMany({ where: { status: { in: ['success', 'published'] } }, orderBy: { created_at: 'desc' } });
+      console.log(`[FETCH] Neon post_logs: ${neonLogs.length}`);
+    } catch (e: any) { console.warn('[FETCH] Neon post_logs failed:', e.message); }
+
+    // STEP 3 — Get from Neon posts table (for platform IDs not yet in post_logs)
+    let postTableLogs: any[] = [];
+    try {
+      const prismaPosts = await prisma.posts.findMany({ where: { status: 'published' } });
+      console.log(`[FETCH] Neon posts table: ${prismaPosts.length}`);
+      for (const post of prismaPosts) {
+        const entries = [
+          { platform: 'facebook', id: post.facebook_post_id },
+          { platform: 'instagram', id: post.instagram_media_id },
+          { platform: 'youtube', id: post.youtube_video_id },
+        ];
+        for (const e of entries) {
+          if (!e.id) continue;
+          const exists = neonLogs.find(l => l.platform_post_id === e.id);
+          if (!exists) postTableLogs.push({ id: post.id + '_' + e.platform, user_id: post.user_id, platform: e.platform, platform_post_id: e.id, status: 'success', views: 0, likes: 0, comments: 0, reach: 0, impressions: 0, engagement: 0, shares: 0, created_at: post.created_at });
+        }
+      }
+    } catch (e: any) { console.warn('[FETCH] posts table failed:', e.message); }
+
+    // STEP 4 — Merge all Neon sources
+    const allPostLogs = [...neonLogs, ...postTableLogs];
+    console.log(`[FETCH START] Total posts to process: ${allPostLogs.length}, Total users: ${[...new Set([...allPostLogs.map(p => p.user_id), ...allAccounts.map(a => a.user_id)])].length}`);
+
+    // STEP 6 — Group by user
+    const accountsByUser: Record<string, any[]> = {};
+    allAccounts.forEach(acc => { if (!accountsByUser[acc.user_id]) accountsByUser[acc.user_id] = []; accountsByUser[acc.user_id].push(acc); });
+    const allUserIds = [...new Set([...allPostLogs.map(p => p.user_id), ...allAccounts.map(a => a.user_id)])];
+
+    let processedUsersCount = 0;
+    let snapshotsCreated = 0;
+
+    for (const userId of allUserIds) {
+      try {
+        const userAccounts = accountsByUser[userId] || [];
+        const userPosts = allPostLogs.filter(p => p.user_id === userId);
+        
+        const tokenMap: Record<string, any> = {};
+        userAccounts.forEach(acc => { tokenMap[acc.platform.trim().toLowerCase()] = acc; });
+
+        let totalReach = 0, totalImpressions = 0, totalEngagement = 0, totalViews = 0, totalLikes = 0, totalComments = 0;
+        
+        // Track per platform
+        const platformMetrics: Record<string, any> = {
+          facebook: { views: 0, likes: 0, comments: 0, shares: 0, reach: 0, impressions: 0, engagement: 0 },
+          instagram: { views: 0, likes: 0, comments: 0, shares: 0, reach: 0, impressions: 0, engagement: 0 },
+          youtube: { views: 0, likes: 0, comments: 0, shares: 0, reach: 0, impressions: 0, engagement: 0 }
+        };
+
+        if (userPosts.length > 0) {
+          await Promise.allSettled(userPosts.map(async (post) => {
+            const platform = post.platform?.trim().toLowerCase();
+            const postId = post.platform_post_id;
+            const token = tokenMap[platform]?.access_token;
+            if (!postId || (!token && platform !== 'youtube')) { 
+              console.warn(`[POST] Skip ${platform}/${postId}: missing token or postId`); return; 
+            }
+
+            let m: any = null;
+            
+            try {
+              if (platform === 'facebook') {
+                // page_id is stored inside metadata JSONB, NOT as a top-level column
+                const fbAccount = tokenMap['facebook'];
+                const fbPageId = fbAccount?.metadata?.page_id || fbAccount?.page_id;
+                console.log(`[FB TOKEN TYPE] fetch-analytics: page_id='${fbPageId || 'MISSING'}', stored post_id='${postId}'`)
+                m = await fetchFacebookMetrics(postId, token, fbPageId, post.user_id);
+              } else if (platform === 'instagram') {
+                m = await fetchInstagramMetrics(postId, token, post.user_id);
+              } else if (platform === 'youtube') {
+                m = await fetchYouTubeMetrics(postId, process.env.GOOGLE_API_KEY || '', post.user_id);
+              }
+
+              if (m === null) {
+                console.warn(`[FETCH WARNING] Failed to fetch analytics for ${platform}/${postId}. Keeping previous metrics: views=${post.views}, likes=${post.likes}`);
+                logger.analytics.warn(`Failed to fetch analytics for ${platform}/${postId}. Keeping previous metrics.`, {
+                  platform,
+                  platform_post_id: postId,
+                  user_id: post.user_id
+                });
+                
+                // Trigger Analytics Sync Failed notification (throttled to 24h)
+                const platformName = platform.charAt(0).toUpperCase() + platform.slice(1);
+                await notificationService.createNotification(
+                  post.user_id,
+                  `analytics_sync_failed_${platform.toLowerCase()}`,
+                  'Analytics Sync Failed',
+                  `Analytics could not be fetched from ${platformName}.`,
+                  { platform, platformPostId: postId }
+                );
+                // Use previous metrics for totals
+                totalViews += post.views || 0;
+                totalLikes += post.likes || 0;
+                totalComments += post.comments || 0;
+                totalReach += post.reach || 0;
+                totalImpressions += post.impressions || 0;
+                totalEngagement += post.engagement || 0;
+
+                if (platformMetrics[platform]) {
+                  platformMetrics[platform].views += post.views || 0;
+                  platformMetrics[platform].likes += post.likes || 0;
+                  platformMetrics[platform].comments += post.comments || 0;
+                  platformMetrics[platform].shares += post.shares || 0;
+                  platformMetrics[platform].reach += post.reach || 0;
+                  platformMetrics[platform].impressions += post.impressions || 0;
+                  platformMetrics[platform].engagement += post.engagement || 0;
+                }
+                return;
+              }
+
+              // Update user totals
+              totalViews += m.views; 
+              totalLikes += m.likes; 
+              totalComments += m.comments; 
+              totalReach += m.reach; 
+              totalImpressions += m.impressions; 
+              totalEngagement += m.engagement;
+
+              // Update platform totals
+              if (platformMetrics[platform]) {
+                platformMetrics[platform].views += m.views;
+                platformMetrics[platform].likes += m.likes;
+                platformMetrics[platform].comments += m.comments;
+                platformMetrics[platform].shares += m.shares;
+                platformMetrics[platform].reach += m.reach;
+                platformMetrics[platform].impressions += m.impressions;
+                platformMetrics[platform].engagement += m.engagement;
+              }
+
+              // Update post_logs
+              const fetchedAt = new Date().toISOString();
+              const updateData = { 
+                views: m.views, 
+                likes: m.likes, 
+                comments: m.comments, 
+                shares: m.shares,
+                reach: m.reach, 
+                impressions: m.impressions, 
+                engagement: m.engagement,
+                fetched_at: fetchedAt 
+              };
+
+              await prisma.post_logs.updateMany({ 
+                where:{ platform_post_id:postId }, 
+                data: { ...updateData, fetched_at: new Date(fetchedAt) }
+              });
+            } catch (e: any) { 
+              console.error(`[POST] Error ${platform}/${postId}: ${e.message}`); 
+              logger.analytics.error(`Exception while fetching analytics for ${platform}/${postId}`, {
+                platform,
+                platform_post_id: postId,
+                error: e.message,
+                stack: e.stack
+              });
+            }
+          }));
+        }
+
+        console.log(`[MERGED TOTALS] User ${userId.slice(0,8)} views=${totalViews} likes=${totalLikes} reach=${totalReach} eng=${totalEngagement}`);
+
+        const now = new Date();
+        const snapshotPayload = {
+          user_id: userId,
+          platform: 'aggregated',
+          total_reach: totalReach,
+          total_impressions: totalImpressions,
+          total_engagement: totalEngagement,
+          total_views: totalViews,
+          total_likes: totalLikes,
+          total_comments: totalComments,
+        };
+
+        try {
+          // 1. Write/Upsert to analytics_current
+          const currentStats = await prisma.analytics_current.upsert({
+            where: { user_id: userId },
+            create: {
+              user_id: userId,
+              total_reach: totalReach,
+              total_impressions: totalImpressions,
+              total_engagement: totalEngagement,
+              total_views: totalViews,
+              total_likes: totalLikes,
+              total_comments: totalComments,
+              platform_metrics: platformMetrics,
+            },
+            update: {
+              total_reach: totalReach,
+              total_impressions: totalImpressions,
+              total_engagement: totalEngagement,
+              total_views: totalViews,
+              total_likes: totalLikes,
+              total_comments: totalComments,
+              platform_metrics: platformMetrics,
+              updated_at: now,
+            }
+          });
+          console.log(`[CURRENT METRICS SAVED] Prisma id=${currentStats.id} userId=${userId.slice(0, 8)}`);
+
+          // 2. Write/Update to analytics_daily (grouping by date)
+          const startOfDay = new Date(now);
+          startOfDay.setUTCHours(0, 0, 0, 0);
+
+          const existingDaily = await prisma.analytics_daily.findFirst({
+            where: {
+              user_id: userId,
+              snapshot_date: {
+                gte: startOfDay,
+                lt: new Date(startOfDay.getTime() + 24 * 60 * 60 * 1000)
+              }
+            }
+          });
+
+          if (existingDaily) {
+            await prisma.analytics_daily.update({
+              where: { id: existingDaily.id },
+              data: {
+                total_reach: totalReach,
+                total_impressions: totalImpressions,
+                total_engagement: totalEngagement,
+                total_views: totalViews,
+                total_likes: totalLikes,
+                total_comments: totalComments,
+                platform_metrics: platformMetrics,
+              }
+            });
+            console.log(`[DAILY METRICS UPDATED] id=${existingDaily.id} userId=${userId.slice(0, 8)}`);
+          } else {
+            const createdDaily = await prisma.analytics_daily.create({
+              data: {
+                user_id: userId,
+                total_reach: totalReach,
+                total_impressions: totalImpressions,
+                total_engagement: totalEngagement,
+                total_views: totalViews,
+                total_likes: totalLikes,
+                total_comments: totalComments,
+                platform_metrics: platformMetrics,
+                snapshot_date: startOfDay,
+                created_at: now
+              }
+            });
+            console.log(`[DAILY METRICS CREATED] id=${createdDaily.id} userId=${userId.slice(0, 8)}`);
+          }
+
+          // 3. Write to analytics_snapshots (Historical tracking with 100 snapshot retention)
+          const created = await prisma.analytics_snapshots.create({
+            data: {
+              ...snapshotPayload,
+              platform_metrics: platformMetrics,
+              snapshot_date: now,
+              created_at: now,
+            }
+          });
+          console.log(`[SNAPSHOT SAVED] Prisma id=${created.id} userId=${userId.slice(0, 8)} platform_metrics=${JSON.stringify(platformMetrics)}`);
+          snapshotsCreated++;
+
+          // Immediate retention cleanup: keep only latest 1000 snapshots for this user
+          try {
+            const keepSnapshots = await prisma.analytics_snapshots.findMany({
+              where: { user_id: userId },
+              orderBy: { created_at: 'desc' },
+              take: 1000,
+              select: { id: true }
+            });
+            const keepIds = keepSnapshots.map((s: any) => s.id);
+            if (keepIds.length > 0) {
+              const deleted = await prisma.analytics_snapshots.deleteMany({
+                where: {
+                  user_id: userId,
+                  id: { notIn: keepIds }
+                }
+              });
+              console.log(`[RETENTION CLEANUP] Deleted ${deleted.count} older snapshots for user ${userId.slice(0, 8)}. Kept ${keepIds.length}.`);
+            }
+          } catch (cleanupErr: any) {
+            console.error(`[RETENTION CLEANUP FAILED] Error for user ${userId.slice(0, 8)}:`, cleanupErr.message);
+          }
+        } catch (prismaErr: any) {
+          console.error('[SNAPSHOT/AGGREGATION INSERT FAILED] Prisma error:', prismaErr.message);
+        }
+
+
+
+        processedUsersCount++;
+      } catch (e: any) { console.error(`[USER ${userId.slice(0,8)}] failed:`, e.message); }
+    }
+
+    let totalSnapshots = 0;
+    try { totalSnapshots = await prisma.analytics_snapshots.count(); } catch (_) {}
+
+    console.log(`[DASHBOARD RESPONSE] processed=${processedUsersCount} snapshots=${snapshotsCreated}`);
+
+    return NextResponse.json({
+      success: true,
+      processed_users: processedUsersCount,
+      snapshots_created: snapshotsCreated,
+      total_snapshots_in_db: totalSnapshots,
+      total_posts: allPostLogs.length,
+      timestamp: new Date().toISOString(),
+    });
+
+  } catch (err: any) {
+    console.error('[FETCH] Fatal:', err.message);
+    logger.analytics.error('Fatal error in fetch-analytics cron route', {
+        error: err.message,
+        stack: err.stack
+    });
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
 }

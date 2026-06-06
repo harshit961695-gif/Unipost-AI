@@ -1,8 +1,16 @@
 {
-    "crons": [
-        {
-            "path": "/api/fetch-analytics",
-            "schedule": "*/1 * * * *"
-        }
-    ]
+  "crons": [
+    {
+      "path": "/api/fetch-analytics",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/schedule-posts",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/integrity-check",
+      "schedule": "0 0 * * *"
+    }
+  ]
 }

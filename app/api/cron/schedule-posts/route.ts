@@ -1,17 +1,20 @@
 export const dynamic = 'force-dynamic'
 /**
- * Scheduler Cron Job API Route
+ * Scheduler & Analytics Sync Cron Job API Route
  * POST /api/cron/schedule-posts
  * 
- * This endpoint should be called periodically (e.g., every minute) by:
+ * This endpoint should be called periodically (e.g., every 5-10 minutes) by:
  * - Vercel Cron Jobs
  * - External cron service (cron-job.org, etc.)
  * - Or manually for testing
  * 
- * It checks for scheduled posts that are due and publishes them.
+ * It performs one task:
+ * Checks for scheduled posts that are due and publishes them
  */
 import { NextRequest, NextResponse } from 'next/server'
-import { supabaseServer } from '@/lib/supabase/server'
+import { createSupabaseServerClient } from '@/lib/supabase/server'
+import prisma from '@/lib/prisma'
+import { logger } from '@/lib/logger'
 
 export const runtime = 'nodejs'
 
@@ -24,191 +27,33 @@ const CRON_SECRET = process.env.CRON_SECRET
  */
 export async function POST(request: NextRequest) {
   try {
-    // Optional: Verify cron secret if set
-    if (CRON_SECRET) {
-      const authHeader = request.headers.get('authorization')
-      if (authHeader !== `Bearer ${CRON_SECRET}`) {
-        return NextResponse.json(
-          { error: 'Unauthorized' },
-          { status: 401 }
-        )
+    const authHeader = request.headers.get('authorization');
+    const cronSecret = process.env.CRON_SECRET;
+    const isDevBypass = process.env.BYPASS_AUTH_FOR_TESTING === 'true';
+
+    if (!isDevBypass || authHeader) {
+      if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
+        logger.scheduler.warn('Unauthorized access attempt to deprecated schedule-posts cron endpoint');
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
       }
     }
 
-    const now = new Date()
-    const nowISO = now.toISOString()
-
-    // Find all scheduled posts that are due (scheduled_at <= now)
-    const { data: scheduledPosts, error: fetchError } = await supabaseServer
-      .from('posts')
-      .select('*')
-      .eq('status', 'scheduled')
-      .lte('scheduled_at', nowISO)
-      .order('scheduled_at', { ascending: true })
-
-    if (fetchError) {
-      console.error('Error fetching scheduled posts:', fetchError)
-      return NextResponse.json(
-        { error: 'Failed to fetch scheduled posts' },
-        { status: 500 }
-      )
-    }
-
-    if (!scheduledPosts || scheduledPosts.length === 0) {
-      return NextResponse.json({
-        message: 'No scheduled posts due',
-        processed: 0,
-      })
-    }
-
-    const results = {
-      processed: 0,
-      published: 0,
-      failed: 0,
-      errors: [] as string[],
-    }
-
-    // Process each scheduled post
-    for (const post of scheduledPosts) {
-      try {
-        // Update status to publishing
-        const { error: updateError } = await supabaseServer
-          .from('posts')
-          .update({
-            status: 'publishing',
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', post.id)
-
-        if (updateError) {
-          throw new Error(`Failed to update post status: ${updateError.message}`)
-        }
-
-        // Log publishing start
-        const { error: logError } = await supabaseServer
-          .from('post_logs')
-          .insert({
-            post_id: post.id,
-            user_id: post.user_id,
-            action: 'publishing',
-            status_before: 'scheduled',
-            status_after: 'publishing',
-            message: `Auto-publishing scheduled post to platforms: ${post.platforms.join(', ')}`,
-          })
-        if (logError) {
-          console.error('Failed to create post log:', logError)
-        }
-
-        // Simulate publishing to each platform
-        const publishResults: Array<{ platform: string; success: boolean; message: string }> = []
-
-        for (const platform of post.platforms) {
-          // Simulate API call delay
-          await new Promise(resolve => setTimeout(resolve, 50))
-
-          // Simulate success (90% success rate)
-          const success = Math.random() > 0.1
-
-          publishResults.push({
-            platform,
-            success,
-            message: success
-              ? `Successfully published to ${platform}`
-              : `Failed to publish to ${platform} (simulated)`,
-          })
-
-          // Log each platform attempt
-          const { error: platformLogError } = await supabaseServer
-            .from('post_logs')
-            .insert({
-              post_id: post.id,
-              user_id: post.user_id,
-              action: success ? 'published' : 'failed',
-              platform,
-              status_before: 'publishing',
-              status_after: success ? 'published' : 'failed',
-              message: publishResults[publishResults.length - 1].message,
-            })
-          if (platformLogError) {
-            console.error('Failed to create post log:', platformLogError)
-          }
-        }
-
-        // Determine final status
-        const allSuccess = publishResults.every(r => r.success)
-        const finalStatus = allSuccess ? 'published' : 'failed'
-
-        // Update post to final status
-        const { error: finalUpdateError } = await supabaseServer
-          .from('posts')
-          .update({
-            status: finalStatus,
-            published_at: allSuccess ? new Date().toISOString() : null,
-            updated_at: new Date().toISOString(),
-            metadata: {
-              publish_results: publishResults,
-              published_at: allSuccess ? new Date().toISOString() : null,
-              auto_published: true,
-            },
-          })
-          .eq('id', post.id)
-
-        if (finalUpdateError) {
-          throw new Error(`Failed to finalize post: ${finalUpdateError.message}`)
-        }
-
-        results.processed++
-        if (allSuccess) {
-          results.published++
-        } else {
-          results.failed++
-        }
-      } catch (error: any) {
-        console.error(`Error processing post ${post.id}:`, error)
-        results.errors.push(`Post ${post.id}: ${error.message}`)
-        results.failed++
-
-        // Mark post as failed
-        const { error: markFailedError } = await supabaseServer
-          .from('posts')
-          .update({
-            status: 'failed',
-            updated_at: new Date().toISOString(),
-            metadata: {
-              error: error.message,
-            },
-          })
-          .eq('id', post.id)
-        if (markFailedError) {
-          console.error('Failed to mark post as failed:', markFailedError)
-        }
-
-        // Log error
-        const { error: errorLogError } = await supabaseServer
-          .from('post_logs')
-          .insert({
-            post_id: post.id,
-            user_id: post.user_id,
-            action: 'failed',
-            status_before: 'scheduled',
-            status_after: 'failed',
-            message: `Auto-publish failed: ${error.message}`,
-            error_details: { error: error.message },
-          })
-        if (errorLogError) {
-          console.error('Failed to create error log:', errorLogError)
-        }
-      }
-    }
-
+    console.log('[CRON] schedule-posts is deprecated. Use /api/schedule/check instead to prevent duplicate execution risk.');
     return NextResponse.json({
-      message: 'Scheduler completed',
-      ...results,
-    })
+      success: true,
+      message: 'Deprecated. This endpoint is disabled. Use /api/schedule/check as the single source of truth for scheduling.',
+      results: {
+        scheduled: { processed: 0, published: 0, failed: 0, errors: [] }
+      }
+    });
   } catch (error: any) {
-    console.error('Scheduler error:', error)
+    console.error('[CRON] Fatal error:', error)
+    logger.scheduler.error('Fatal error in deprecated schedule-posts cron handler', {
+        error: error.message,
+        stack: error.stack
+    });
     return NextResponse.json(
-      { error: error.message || 'Scheduler failed' },
+      { error: error.message || 'Cron job failed' },
       { status: 500 }
     )
   }
@@ -218,9 +63,25 @@ export async function POST(request: NextRequest) {
  * GET /api/cron/schedule-posts
  * Health check endpoint
  */
-export async function GET() {
-  return NextResponse.json({
-    message: 'Scheduler endpoint is active',
-    timestamp: new Date().toISOString(),
-  })
+export async function GET(request: NextRequest) {
+  try {
+    const authHeader = request.headers.get('authorization');
+    const cronSecret = process.env.CRON_SECRET;
+    const isDevBypass = process.env.BYPASS_AUTH_FOR_TESTING === 'true';
+
+    if (!isDevBypass || authHeader) {
+      if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
+        logger.scheduler.warn('Unauthorized GET access attempt to deprecated schedule-posts cron endpoint');
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      }
+    }
+
+    return NextResponse.json({
+      message: 'Scheduler endpoint is active (Deprecated. Use /api/schedule/check instead)',
+      timestamp: new Date().toISOString(),
+    })
+  } catch (error: any) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
 }
+

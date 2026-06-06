@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth } from '@/lib/auth/server';
 import { createSupabaseServerClient } from '@/lib/supabase/server';
 import { connectionService } from '@/lib/services/connectionService';
+import prisma from '@/lib/prisma';
 
 export const runtime = 'nodejs';
 
@@ -59,6 +60,7 @@ export async function POST(request: NextRequest) {
         }
 
         const creationId = createMediaData.id;
+        console.log("IG Creation ID:", creationId);
 
         // Step 2: Publish the media container
         const publishResponse = await fetch(`https://graph.facebook.com/v25.0/${igUserId}/media_publish`, {
@@ -79,7 +81,25 @@ export async function POST(request: NextRequest) {
             throw new Error(publishData.error?.message || 'Failed to publish to Instagram');
         }
 
-        return NextResponse.json({ success: true, postId: publishData.id });
+        console.log("IG Final Post ID:", publishData.id);
+
+        if (!publishData.id) {
+            throw new Error('IG Final Post ID is missing from publish response');
+        }
+
+        const savedMediaId = String(publishData.id);
+        console.log(`[IG PUBLISH] Saved instagram post ID: ${savedMediaId}`);
+
+        await prisma.post_logs.create({
+            data: {
+                user_id: user.id,
+                platform: 'instagram',
+                platform_post_id: savedMediaId,
+                status: 'published'
+            }
+        });
+
+        return NextResponse.json({ success: true, postId: savedMediaId });
 
     } catch (error: any) {
         console.error('Publish Instagram API Error:', error);

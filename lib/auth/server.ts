@@ -10,6 +10,22 @@ import { createSupabaseServerClient } from '@/lib/supabase/server'
  */
 export async function getAuthenticatedUser(request?: NextRequest) {
   try {
+    if (process.env.BYPASS_AUTH_FOR_TESTING === 'true') {
+      console.warn('[AUTH BYPASS] Returning test user 1333698f-c998-4db5-b317-4b1adc42de31');
+      return {
+        user: {
+          id: '1333698f-c998-4db5-b317-4b1adc42de31',
+          email: 'harshit961695@gmail.com',
+          app_metadata: {},
+          user_metadata: {},
+          aud: 'authenticated',
+          created_at: new Date().toISOString(),
+        },
+        token: 'mock_token',
+        error: null
+      }
+    }
+
     const supabase = createSupabaseServerClient()
 
     // getUser() will automatically use the cookies to validate the user

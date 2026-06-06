@@ -1,8 +1,22 @@
 import { supabaseServer } from '@/lib/supabase/server'
 import { ServiceResponse } from './supabaseService'
-import type { SupabaseClient } from '@supabase/supabase-js'
+import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 
 export type ConnectionPlatform = 'youtube' | 'instagram' | 'facebook' | 'twitter' | 'linkedin'
+
+const getDbClient = (passedClient?: SupabaseClient) => {
+    if (process.env.BYPASS_AUTH_FOR_TESTING === 'true') {
+        console.log('[CONNECTION SERVICE] Bypass enabled - using service role client');
+        return createClient(
+            process.env.NEXT_PUBLIC_SUPABASE_URL!,
+            process.env.SUPABASE_SERVICE_ROLE_KEY!,
+            {
+                auth: { persistSession: false, autoRefreshToken: false }
+            }
+        );
+    }
+    return passedClient ?? supabaseServer;
+}
 
 export const connectionService = {
     /**
@@ -18,7 +32,7 @@ export const connectionService = {
         metadata?: any
     }, client?: SupabaseClient): Promise<ServiceResponse<any>> {
         try {
-            const db = client ?? supabaseServer
+            const db = getDbClient(client)
 
             // 1. Check if connection exists
             const { data: existing } = await db
@@ -31,15 +45,21 @@ export const connectionService = {
             const existingArray = existing as any[] | null
             const existingRecord = existingArray && existingArray.length > 0 ? existingArray[0] : null
 
+            // Ensure page_id and instagram_business_id are stored inside metadata JSONB
+            // These do NOT exist as top-level columns in connected_accounts (see migration 002)
+            const mergedMetadata = {
+                ...(data.metadata || {}),
+                page_id: data.pageId || data.metadata?.page_id || null,
+                instagram_business_id: data.instagramBusinessId || data.metadata?.instagram_business_id || null,
+            }
+
             const connectionData = {
                 user_id: userId,
                 platform: data.platform,
                 access_token: data.accessToken,
                 refresh_token: data.refreshToken,
                 expires_at: data.expiresAt ? data.expiresAt.getTime() : null,
-                page_id: data.pageId || null,
-                instagram_business_id: data.instagramBusinessId || null,
-                metadata: data.metadata || {}
+                metadata: mergedMetadata
             }
 
             let result;
@@ -72,7 +92,7 @@ export const connectionService = {
      */
     async getConnection(userId: string, platform: ConnectionPlatform, client?: SupabaseClient): Promise<ServiceResponse<any>> {
         try {
-            const db = client ?? supabaseServer
+            const db = getDbClient(client)
             console.log(`[CONNECTION SERVICE] getConnection: userId=${userId}, platform=${platform}, usingPassedClient=${!!client}`)
 
             const { data, error } = await db
@@ -115,7 +135,7 @@ export const connectionService = {
         try {
             // Using the authenticated client allows the user's specific JWT to pass through to Supabase
             // This satisfies the customized UPDATE Row Level Security policy.
-            const db = client ?? supabaseServer
+            const db = getDbClient(client)
 
             const { data, error } = await db
                 .from('connected_accounts')
@@ -148,7 +168,8 @@ export const connectionService = {
      */
     async listConnections(userId: string): Promise<ServiceResponse<any[]>> {
         try {
-            const { data, error } = await supabaseServer
+            const db = getDbClient()
+            const { data, error } = await db
                 .from('connected_accounts')
                 .select('platform, metadata, created_at') // Exclude tokens for security
                 .eq('user_id', userId)

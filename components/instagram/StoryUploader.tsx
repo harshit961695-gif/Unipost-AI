@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Upload, Camera, History } from "lucide-react"
@@ -17,10 +17,15 @@ export function StoryUploader() {
                 alert('Please select a valid image or video file.')
                 return
             }
+            setMediaPreviewUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null })
             setMediaFile(file)
             setMediaPreviewUrl(URL.createObjectURL(file))
         }
     }
+
+    useEffect(() => {
+        return () => { setMediaPreviewUrl(prev => { if (prev) URL.revokeObjectURL(prev); return null }) }
+    }, [])
 
     const handlePublish = async () => {
         if (!mediaFile) return alert('Media is required for a story.')

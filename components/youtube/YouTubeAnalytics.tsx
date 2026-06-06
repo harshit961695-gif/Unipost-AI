@@ -37,6 +37,10 @@ export function YouTubeAnalytics() {
         setIsLoading(true)
         try {
             const response = await fetch('/api/youtube/analytics')
+            if (!response.ok) {
+                const errData = await response.json().catch(() => ({}))
+                throw new Error(errData.error || `Request failed: ${response.status}`)
+            }
             const result = await response.json()
             if (result.success) {
                 setData(result.analytics)

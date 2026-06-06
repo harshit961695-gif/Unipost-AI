@@ -2,6 +2,9 @@ export const dynamic = 'force-dynamic'
 import { NextResponse } from 'next/server';
 import { createSupabaseServerClient } from '@/lib/supabase/server';
 import { youtubeService } from '@/lib/services/youtube';
+import prisma from '@/lib/prisma';
+import { logger } from '@/lib/logger';
+import { notificationService } from '@/lib/services/notificationService';
 import fs from 'fs';
 import path from 'path';
 
@@ -15,10 +18,13 @@ export async function POST(request: Request) {
     log('\n=======================================');
     log('[BACKEND] ENTERING /api/publish/youtube');
     log('=======================================');
+    let user = null;
     try {
         log('[BACKEND] Checking Supabase user session...');
         const supabase = createSupabaseServerClient();
-        const { data: { user }, error: authError } = await supabase.auth.getUser();
+        const authRes = await supabase.auth.getUser();
+        user = authRes.data?.user;
+        const authError = authRes.error;
 
         if (authError) {
             console.error('[BACKEND] Auth check returned an error:', authError);
@@ -72,7 +78,66 @@ export async function POST(request: Request) {
 
         log(`[YOUTUBE PUBLISH] Upload complete. Video Data: ${JSON.stringify(videoData)}`);
 
+        // Save to post_logs so analytics can find this video
+        const ytVideoId = (videoData as any)?.id;
+        if (ytVideoId) {
+            try {
+                await prisma.post_logs.create({
+                    data: {
+                        user_id: user.id,
+                        platform: 'youtube',
+                        platform_post_id: String(ytVideoId),
+                        status: 'published',
+                        content: title || '',
+                    }
+                });
+                log(`[YT PUBLISH] Saved post_log with platform_post_id: ${ytVideoId}`);
+            } catch (logErr: any) {
+                log(`[YT PUBLISH] Failed to save post_log: ${logErr.message}`);
+                logger.publish.error(`Failed to save post_log in database for YouTube publish`, {
+                    userId: user.id,
+                    ytVideoId,
+                    error: logErr.message,
+                    stack: logErr.stack
+                });
+            }
+
+            // Save to posts table as well
+            try {
+                await prisma.posts.create({
+                    data: {
+                        user_id: user.id,
+                        caption: title || '',
+                        media_urls: [],
+                        platforms: ['youtube'],
+                        status: 'published',
+                        published_at: new Date(),
+                        youtube_video_id: String(ytVideoId),
+                    }
+                });
+                log(`[YT PUBLISH] Saved posts record with youtube_video_id: ${ytVideoId}`);
+            } catch (postErr: any) {
+                log(`[YT PUBLISH] Failed to save posts record: ${postErr.message}`);
+                logger.publish.error(`Failed to save posts record in database for YouTube publish`, {
+                    userId: user.id,
+                    ytVideoId,
+                    error: postErr.message,
+                    stack: postErr.stack
+                });
+            }
+
+            // Trigger Success Notification
+            await notificationService.createNotification(
+                user.id,
+                'publish_success',
+                'Post Published Successfully',
+                'Your Facebook/Instagram/YouTube post has been published successfully.',
+                { ytVideoId: String(ytVideoId) }
+            );
+        }
+
         return NextResponse.json({ success: true, video: videoData });
+
     } catch (error: any) {
         log('\n[BACKEND] FATAL ERROR IN ROUTE:');
         log(error.stack || error.toString());
@@ -80,6 +145,32 @@ export async function POST(request: Request) {
             log('[BACKEND] YouTube API Details: ' + JSON.stringify(error.response.data));
         }
         log('=======================================\n');
+        logger.publish.error(`Failed to publish to YouTube for user ${user ? user.id : 'unknown'}`, {
+            error: error.message,
+            stack: error.stack,
+            youtube_api_details: error.response?.data
+        });
+        if (user) {
+            const errMsg = (error.message || '').toLowerCase();
+            const isTokenExpired = errMsg.includes('token') || errMsg.includes('connect') || errMsg.includes('session') || errMsg.includes('auth') || errMsg.includes('grant');
+            
+            await notificationService.createNotification(
+                user.id,
+                'publish_failed_youtube',
+                'Post Publishing Failed',
+                'Publishing failed on YouTube.\nView logs for details.',
+                { platform: 'youtube', error: error.message }
+            );
+
+            if (isTokenExpired) {
+                await notificationService.createNotification(
+                    user.id,
+                    'account_expired_youtube',
+                    'Reconnect YouTube',
+                    'YouTube connection expired.\nReconnect your account.'
+                );
+            }
+        }
         return NextResponse.json(
             { error: error.message || 'Failed to publish to YouTube' },
             { status: 500 }
