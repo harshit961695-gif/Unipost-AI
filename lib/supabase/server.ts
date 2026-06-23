@@ -65,6 +65,38 @@ export function createSupabaseServerClient() {
  * Legacy helper for direct access token usage.
  */
 export const createAuthenticatedClient = (accessToken: string) => {
+  const tokenLength = accessToken ? accessToken.length : 0;
+  console.log(`[SUPABASE CLIENT] createAuthenticatedClient: token length = ${tokenLength}`);
+
+  if (process.env.BYPASS_AUTH_FOR_TESTING === 'true') {
+    console.log('[SUPABASE CLIENT] Bypass enabled - using service role client for createAuthenticatedClient');
+    return createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false,
+        },
+      }
+    )
+  }
+
+  // Validate that the token exists and is structurally a valid JWT (3 dot-separated parts)
+  if (!accessToken || accessToken === 'undefined' || accessToken === 'null' || accessToken.split('.').length !== 3) {
+    console.warn(`[SUPABASE CLIENT] Warning: Received malformed/missing accessToken (length: ${tokenLength}). Falling back to anon client.`);
+    return createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false,
+        },
+      }
+    )
+  }
+
   return createClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
