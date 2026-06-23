@@ -63,10 +63,6 @@ export async function fetchFacebookMetrics(
     console.log(`[FB STORED POST ID] Raw stored ID: ${postId}`)
     console.log(`[FB STORED POST ID] Page ID available: ${pageId || 'NOT PROVIDED'}`)
 
-    // ── Reconstruct full Facebook Page Post ID if needed ──
-    // Graph API requires the compound format: {pageId}_{postId}
-    // e.g. 957534230785131_122114152575286762
-    // If only the fragment is stored (no underscore), prepend the page ID
     let fullPostId = postId
     if (pageId && !postId.includes('_')) {
       fullPostId = `${pageId}_${postId}`
@@ -82,10 +78,8 @@ export async function fetchFacebookMetrics(
       return null
     }
 
-    // ── Primary request: reactions + comments only ──
-    // Do NOT include "shares" in fields — it causes HTTP 400 on some post types
-    const url = `https://graph.facebook.com/v25.0/${fullPostId}?fields=reactions.summary(true),comments.summary(true)&access_token=${accessToken}`
-
+    console.log('[FB] Using basic fields endpoint (no App Review needed)')
+    const url = `https://graph.facebook.com/v21.0/${fullPostId}?fields=likes.summary(true),comments.summary(true),shares,created_time&access_token=${accessToken}`
     const redactedUrl = url.replace(accessToken, 'PAGE_TOKEN_REDACTED')
     console.log(`[FB REQUEST URL] ${redactedUrl}`)
 
@@ -94,52 +88,19 @@ export async function fetchFacebookMetrics(
 
     console.log(`[FB RAW RESPONSE] HTTP ${res.status} for post ${fullPostId}:`, JSON.stringify(data))
 
-    let reactions = 0
-    let comments = 0
-    let isFallback = false
-
     if (data.error) {
-      const isPermissionErrorOnReconstructed = data.error.code === 10 && fullPostId !== postId;
-      const isUnsupportedField = data.error.code === 100 && 
-        (data.error.message?.includes('reactions') || data.error.message?.includes('Tried accessing nonexisting field'));
-
-      if (isUnsupportedField || isPermissionErrorOnReconstructed) {
-        let retryId = fullPostId;
-        if (isPermissionErrorOnReconstructed) {
-          console.log(`[FB FALLBACK ACTIVATED] reconstructed ID ${fullPostId} failed with permission error (likely invalid post story node). Retrying with raw ID ${postId} and likes.summary(true)...`)
-          retryId = postId;
-        } else {
-          console.log(`[FB FALLBACK ACTIVATED] reactions field not supported on post ${fullPostId}. Retrying with likes.summary(true)...`)
-        }
-        
-        const fallbackUrl = `https://graph.facebook.com/v25.0/${retryId}?fields=likes.summary(true),comments.summary(true)&access_token=${accessToken}`
-        const fallbackRes = await fetchWithTimeout(fallbackUrl)
-        const fallbackData = await fallbackRes.json()
-        
-        console.log(`[FB FALLBACK RESPONSE] HTTP ${fallbackRes.status} for post ${retryId}:`, JSON.stringify(fallbackData))
-        
-        if (fallbackData.error) {
-          console.error(`[FB POST FETCH] Fallback failed: ${JSON.stringify(fallbackData.error)}`)
-          return null
-        }
-        
-        // Map likes into reactions variable so the metrics calculation remains consistent
-        reactions = Number(fallbackData.likes?.summary?.total_count || 0)
-        comments = Number(fallbackData.comments?.summary?.total_count || 0)
-        isFallback = true
-      } else {
-        console.error(`[FB RAW RESPONSE] API Error: ${JSON.stringify({
-          message: data.error.message,
-          type: data.error.type,
-          code: data.error.code,
-          fbtrace_id: data.error.fbtrace_id
-        })}`)
-        logger.analytics.error(`Facebook API Error in fetchFacebookMetrics for post ${fullPostId}`, {
-          error: data.error
-        })
-        
+      console.warn(`[FB POST FETCH] Primary query failed. Attempting post confirmation fallback...`)
+      
+      const confirmUrl = `https://graph.facebook.com/v21.0/${fullPostId}?fields=id,message,created_time&access_token=${accessToken}`
+      const confirmRes = await fetchWithTimeout(confirmUrl)
+      const confirmData = await confirmRes.json()
+      
+      console.log(`[FB CONFIRM RESPONSE] HTTP ${confirmRes.status} for post ${fullPostId}:`, JSON.stringify(confirmData))
+      
+      if (confirmData.error) {
+        console.error(`[FB POST FETCH] Confirmation fallback also failed: ${JSON.stringify(confirmData.error)}`)
         // Trigger Reconnect Facebook notification if token is expired/invalid
-        if (userId && (data.error.code === 190 || data.error.message?.includes('access token') || data.error.message?.includes('validate'))) {
+        if (userId && (confirmData.error.code === 190 || confirmData.error.message?.includes('access token') || confirmData.error.message?.includes('validate'))) {
             await notificationService.createNotification(
                 userId,
                 'account_expired_facebook',
@@ -149,43 +110,35 @@ export async function fetchFacebookMetrics(
         }
         return null
       }
-    } else {
-      reactions = Number(data.reactions?.summary?.total_count || 0)
-      comments = Number(data.comments?.summary?.total_count || 0)
+      
+      // Post exists but primary metrics query failed (e.g. missing permissions). Return null to keep existing DB values.
+      console.log(`[FB POST FETCH] Post confirmed to exist but metrics query failed. Returning null to keep existing values.`)
+      return null
     }
 
-    // ── Shares: fetch separately so it never breaks the main request ──
-    let shares = 0
-    try {
-      const sharesUrl = `https://graph.facebook.com/v25.0/${fullPostId}?fields=shares&access_token=${accessToken}`
-      const sharesRes = await fetchWithTimeout(sharesUrl)
-      const sharesData = await sharesRes.json()
-      if (sharesData.shares?.count) {
-        shares = Number(sharesData.shares.count)
-      }
-    } catch (_sharesErr) {
-      console.log(`[FB POST FETCH] Shares field unavailable for post ${fullPostId}, defaulting to 0`)
-    }
-
-    // Total engagement = reactions + comments + shares
-    const totalEngagement = reactions + comments + shares
-    const approximateViews = totalEngagement > 0 ? totalEngagement : 0
-    const engagementRate = approximateViews > 0 ? (totalEngagement / approximateViews) * 100 : 0
+    const likes = data.likes?.summary?.total_count || 0
+    const comments = data.comments?.summary?.total_count || 0
+    const shares = data.shares?.count || 0
+    const engagement = likes + comments + shares
+    const views = engagement
+    const reach = engagement
+    const impressions = engagement
+    const engagement_rate = impressions > 0 ? (engagement / impressions) * 100 : 0
 
     const metrics: PlatformMetrics = {
-      views: Math.max(approximateViews, 0),
-      likes: Math.max(reactions, 0),
+      views: Math.max(views, 0),
+      likes: Math.max(likes, 0),
       comments: Math.max(comments, 0),
       shares: Math.max(shares, 0),
-      reach: Math.max(approximateViews, 0),
-      impressions: Math.max(approximateViews, 0),
-      engagement: Math.max(totalEngagement, 0),
-      engagement_rate: Math.round(engagementRate * 100) / 100,
+      reach: Math.max(reach, 0),
+      impressions: Math.max(impressions, 0),
+      engagement: Math.max(engagement, 0),
+      engagement_rate: Math.round(engagement_rate * 100) / 100,
     }
 
-    console.log(`[FB FINAL METRICS] post=${fullPostId} isFallback=${isFallback} likes/reactions=${reactions} comments=${comments} shares=${shares} totalEngagement=${totalEngagement}`)
-
+    console.log(`[FB FINAL METRICS] post=${fullPostId} likes=${likes} comments=${comments} shares=${shares} engagement=${engagement}`)
     return metrics
+
   } catch (error: any) {
     console.error(`[FB POST FETCH] Exception for post ${postId}:`, error.message)
     logger.analytics.error(`Exception in fetchFacebookMetrics for post ${postId}`, {
@@ -358,95 +311,109 @@ export async function fetchYouTubeMetrics(
     console.log(`[YT POST FETCH] Using API key: ${apiKey ? apiKey.slice(0, 8) + '...' : 'MISSING'}`)
 
     let stats: any = null
-    let fetchedViaOAuth = false
+    let fetched = false
+    let oauthAccessToken: string | null = null
 
     if (userId) {
       try {
-        console.log(`[YT POST FETCH] Attempting authenticated fetch for video ${videoId} and user ${userId}`)
+        console.log(`[YT POST FETCH] Fetching connected account access_token for user ${userId}`)
         const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
         const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
         if (supabaseUrl && supabaseServiceKey) {
           const supabase = createClient(supabaseUrl, supabaseServiceKey, {
             auth: { persistSession: false, autoRefreshToken: false },
           })
-          const auth = await youtubeService.getOAuth2Client(userId, supabase)
-          const youtube = google.youtube({ version: 'v3', auth })
-          const response = await youtube.videos.list({
-            part: ['statistics'],
-            id: [videoId]
-          })
           
-          if (response.data.items && response.data.items.length > 0) {
-            stats = response.data.items[0].statistics || {}
-            fetchedViaOAuth = true
-            console.log(`[YT POST FETCH] Successfully fetched statistics via OAuth for video ${videoId}`)
-          } else {
-            console.warn(`[YT POST FETCH] Authenticated query returned no items for video ${videoId}`)
+          const { data: connection } = await supabase
+            .from('connected_accounts')
+            .select('*')
+            .eq('user_id', userId)
+            .eq('platform', 'youtube')
+            .neq('access_token', '')
+            .limit(1)
+
+          if (connection && connection.length > 0) {
+            oauthAccessToken = connection[0].access_token
           }
+        }
+      } catch (err: any) {
+        console.warn(`[YT POST FETCH] Error fetching connection from database: ${err.message}`)
+      }
+    }
+
+    // Try OAuth first
+    if (oauthAccessToken) {
+      try {
+        console.log(`[YT POST FETCH] Attempting OAuth fetch for video ${videoId}`)
+        const url = `https://www.googleapis.com/youtube/v3/videos?part=statistics&id=${videoId}`
+        const res = await fetchWithTimeout(url, {
+          headers: {
+            Authorization: `Bearer ${oauthAccessToken}`
+          },
+          cache: 'no-store'
+        })
+        const data = await res.json()
+        console.log(`[YT OAUTH RESPONSE] HTTP ${res.status}:`, JSON.stringify(data))
+
+        if (data.error) {
+          console.warn(`[YT OAUTH RESPONSE] API Error: ${data.error.message} (code: ${data.error.code})`)
+          // Trigger Reconnect YouTube notification if token is expired/invalid
+          if (userId && (data.error.code === 401 || data.error.message?.includes('expired') || data.error.message?.includes('invalid_grant'))) {
+              await notificationService.createNotification(
+                  userId,
+                  'account_expired_youtube',
+                  'Reconnect YouTube',
+                  'YouTube connection expired.\nReconnect your account.'
+              )
+          }
+        } else if (!data.items || data.items.length === 0) {
+          console.log('[YT] Video not found or private — statistics unavailable')
         } else {
-          console.warn(`[YT POST FETCH] Supabase env variables missing, skipping OAuth fetch`)
+          stats = data.items[0].statistics || {}
+          fetched = true
+          console.log(`[YT POST FETCH] Successfully fetched statistics via OAuth for video ${videoId}`)
         }
       } catch (oauthErr: any) {
         console.warn(`[YT POST FETCH] OAuth fetch failed for video ${videoId}: ${oauthErr.message}`)
-        // Trigger Reconnect YouTube notification if token is expired/invalid
-        if (oauthErr.code === 401 || oauthErr.message?.includes('expired') || oauthErr.message?.includes('invalid_grant') || oauthErr.message?.includes('token')) {
-          await notificationService.createNotification(
-            userId,
-            'account_expired_youtube',
-            'Reconnect YouTube',
-            'YouTube connection expired.\nReconnect your account.'
-          )
-        }
       }
     }
 
-    if (!fetchedViaOAuth) {
-      console.log(`[YT POST FETCH] Falling back to public API key fetch for video ${videoId}`)
-      if (!apiKey) {
-        console.error(`[YT POST FETCH] GOOGLE_API_KEY is missing or empty!`)
-        return null
-      }
+    // Fallback to API Key if OAuth failed or wasn't available
+    if (!fetched) {
+      console.log(`[YT POST FETCH] Falling back to API key fetch for video ${videoId}`)
+      if (apiKey) {
+        try {
+          const url = `https://www.googleapis.com/youtube/v3/videos?part=statistics&id=${videoId}&key=${apiKey}`
+          const res = await fetchWithTimeout(url, { cache: 'no-store' })
+          const data = await res.json()
+          console.log(`[YT API KEY RESPONSE] HTTP ${res.status}:`, JSON.stringify(data))
 
-      const url = `https://www.googleapis.com/youtube/v3/videos?part=statistics&id=${videoId}&key=${apiKey}`
-      const redactedUrl = url.replace(apiKey, 'GOOGLE_API_KEY_REDACTED')
-      console.log(`[YT REQUEST URL] ${redactedUrl}`)
-
-      const res = await fetchWithTimeout(url, { cache: 'no-store' })
-      const data = await res.json()
-
-      console.log(`[YT RAW RESPONSE] HTTP ${res.status}: ${JSON.stringify(data)}`)
-
-      if (data.error) {
-        console.error(`[YT API RESPONSE] API Error: ${data.error.message} (code: ${data.error.code})`)
-        logger.analytics.error(`YouTube API Error in fetchYouTubeMetrics for video ${videoId}`, {
-          error: data.error
-        })
-        
-        // Trigger Reconnect YouTube notification if token is expired/invalid
-        if (userId && (data.error.code === 401 || data.error.message?.includes('expired') || data.error.message?.includes('invalid_grant'))) {
-            await notificationService.createNotification(
-                userId,
-                'account_expired_youtube',
-                'Reconnect YouTube',
-                'YouTube connection expired.\nReconnect your account.'
-            )
+          if (data.error) {
+            console.error(`[YT API RESPONSE] API Error: ${data.error.message} (code: ${data.error.code})`)
+          } else if (!data.items || data.items.length === 0) {
+            console.log('[YT] Video not found or private — statistics unavailable')
+          } else {
+            stats = data.items[0].statistics || {}
+            fetched = true
+            console.log(`[YT POST FETCH] Successfully fetched statistics via API key for video ${videoId}`)
+          }
+        } catch (apiKeyErr: any) {
+          console.error(`[YT POST FETCH] API key fetch failed for video ${videoId}: ${apiKeyErr.message}`)
         }
-        return null
+      } else {
+        console.warn(`[YT POST FETCH] GOOGLE_API_KEY is missing or empty, cannot fallback.`)
       }
-
-      if (!data.items || data.items.length === 0) {
-        console.warn(`[YT API RESPONSE] No items returned for video ${videoId} — video may be private/deleted or videoId is wrong`)
-        return null
-      }
-
-      stats = data.items[0].statistics || {}
     }
 
-    // Use Number() for all conversions (safer than parseInt for edge cases)
+    if (!fetched) {
+      console.log('[YT] Note: Private/Unlisted videos return 0 stats. Returning null to keep existing values.')
+      return null
+    }
+
     const views = Number(stats.viewCount || 0)
     const likes = Number(stats.likeCount || 0)
     const comments = Number(stats.commentCount || 0)
-    const shares = 0 // YouTube doesn't expose shares via public API
+    const shares = 0
 
     const totalEngagement = likes + comments
     const engagementRate = views > 0 ? (totalEngagement / views) * 100 : 0
@@ -463,7 +430,6 @@ export async function fetchYouTubeMetrics(
     }
 
     console.log(`[YT PARSED METRICS] views=${metrics.views} likes=${metrics.likes} comments=${metrics.comments} shares=${metrics.shares}`)
-
     return metrics
   } catch (error: any) {
     console.error(`[YT POST FETCH] Exception for video ${videoId}:`, error.message)
@@ -471,6 +437,7 @@ export async function fetchYouTubeMetrics(
       error: error.message,
       stack: error.stack
     })
+    console.log('[YT] Note: Exception caught. Returning null to keep existing values.')
     return null
   }
 }

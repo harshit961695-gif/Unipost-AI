@@ -11,15 +11,23 @@ export const maxDuration = 60;
 
 export async function GET(request: NextRequest) {
   try {
-    const authHeader = request.headers.get('authorization');
-    const cronSecret = process.env.CRON_SECRET;
-    const isDevBypass = process.env.BYPASS_AUTH_FOR_TESTING === 'true';
+    const isDevBypass = process.env.BYPASS_AUTH_FOR_TESTING === 'true'
 
-    if (!isDevBypass || authHeader) {
-      if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
-        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    if (!isDevBypass) {
+      const cronSecret = process.env.CRON_SECRET
+      const authHeader = request.headers.get('authorization')
+      
+      if (!cronSecret) {
+        console.error('[FETCH] CRON_SECRET env variable is not set — analytics cron will fail in production!')
+      }
+      
+      if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
+        console.error('[FETCH] Unauthorized cron attempt — header mismatch')
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
       }
     }
+
+    console.log('[FETCH] Auth passed. isDevBypass:', isDevBypass)
 
     console.log('[FETCH START] ===== ANALYTICS FETCH STARTING =====');
     console.log('[FETCH] Timestamp:', new Date().toISOString());
@@ -70,6 +78,17 @@ export async function GET(request: NextRequest) {
     const allPostLogs = [...neonLogs, ...postTableLogs];
     console.log(`[FETCH START] Total posts to process: ${allPostLogs.length}, Total users: ${[...new Set([...allPostLogs.map(p => p.user_id), ...allAccounts.map(a => a.user_id)])].length}`);
 
+    // Track detailed audit statistics
+    let totalPostsProcessed = 0;
+    let totalPostsFetched = 0;
+    let totalPostsSkipped = 0;
+    let totalDbRowsUpdated = 0;
+    const auditPlatformMetrics: Record<string, { fetched: number, skipped: number, views: number, likes: number, comments: number }> = {
+      facebook: { fetched: 0, skipped: 0, views: 0, likes: 0, comments: 0 },
+      instagram: { fetched: 0, skipped: 0, views: 0, likes: 0, comments: 0 },
+      youtube: { fetched: 0, skipped: 0, views: 0, likes: 0, comments: 0 }
+    };
+
     // STEP 6 — Group by user
     const accountsByUser: Record<string, any[]> = {};
     allAccounts.forEach(acc => { if (!accountsByUser[acc.user_id]) accountsByUser[acc.user_id] = []; accountsByUser[acc.user_id].push(acc); });
@@ -100,8 +119,14 @@ export async function GET(request: NextRequest) {
             const platform = post.platform?.trim().toLowerCase();
             const postId = post.platform_post_id;
             const token = tokenMap[platform]?.access_token;
+            totalPostsProcessed++;
             if (!postId || (!token && platform !== 'youtube')) { 
-              console.warn(`[POST] Skip ${platform}/${postId}: missing token or postId`); return; 
+              console.warn(`[POST] Skip ${platform}/${postId}: missing token or postId`);
+              totalPostsSkipped++;
+              if (auditPlatformMetrics[platform]) {
+                auditPlatformMetrics[platform].skipped++;
+              }
+              return; 
             }
 
             let m: any = null;
@@ -121,6 +146,10 @@ export async function GET(request: NextRequest) {
 
               if (m === null) {
                 console.warn(`[FETCH WARNING] Failed to fetch analytics for ${platform}/${postId}. Keeping previous metrics: views=${post.views}, likes=${post.likes}`);
+                totalPostsSkipped++;
+                if (auditPlatformMetrics[platform]) {
+                  auditPlatformMetrics[platform].skipped++;
+                }
                 logger.analytics.warn(`Failed to fetch analytics for ${platform}/${postId}. Keeping previous metrics.`, {
                   platform,
                   platform_post_id: postId,
@@ -175,6 +204,15 @@ export async function GET(request: NextRequest) {
                 platformMetrics[platform].engagement += m.engagement;
               }
 
+              // Increment successful audit metrics
+              totalPostsFetched++;
+              if (auditPlatformMetrics[platform]) {
+                auditPlatformMetrics[platform].fetched++;
+                auditPlatformMetrics[platform].views += m.views;
+                auditPlatformMetrics[platform].likes += m.likes;
+                auditPlatformMetrics[platform].comments += m.comments;
+              }
+
               // Update post_logs
               const fetchedAt = new Date().toISOString();
               const updateData = { 
@@ -188,12 +226,17 @@ export async function GET(request: NextRequest) {
                 fetched_at: fetchedAt 
               };
 
-              await prisma.post_logs.updateMany({ 
+              const updateRes = await prisma.post_logs.updateMany({ 
                 where:{ platform_post_id:postId }, 
                 data: { ...updateData, fetched_at: new Date(fetchedAt) }
               });
+              totalDbRowsUpdated += updateRes.count;
             } catch (e: any) { 
               console.error(`[POST] Error ${platform}/${postId}: ${e.message}`); 
+              totalPostsSkipped++;
+              if (auditPlatformMetrics[platform]) {
+                auditPlatformMetrics[platform].skipped++;
+              }
               logger.analytics.error(`Exception while fetching analytics for ${platform}/${postId}`, {
                 platform,
                 platform_post_id: postId,
@@ -337,16 +380,25 @@ export async function GET(request: NextRequest) {
     let totalSnapshots = 0;
     try { totalSnapshots = await prisma.analytics_snapshots.count(); } catch (_) {}
 
-    console.log(`[DASHBOARD RESPONSE] processed=${processedUsersCount} snapshots=${snapshotsCreated}`);
-
-    return NextResponse.json({
+    const finalPayload = {
       success: true,
       processed_users: processedUsersCount,
       snapshots_created: snapshotsCreated,
       total_snapshots_in_db: totalSnapshots,
       total_posts: allPostLogs.length,
+      audit: {
+        posts_processed: totalPostsProcessed,
+        posts_fetched_successfully: totalPostsFetched,
+        posts_skipped_or_failed: totalPostsSkipped,
+        db_rows_updated: totalDbRowsUpdated,
+        platform_metrics: auditPlatformMetrics,
+      },
       timestamp: new Date().toISOString(),
-    });
+    };
+
+    console.log(`[DASHBOARD RESPONSE] processed=${processedUsersCount} snapshots=${snapshotsCreated} audit=${JSON.stringify(finalPayload.audit)}`);
+
+    return NextResponse.json(finalPayload);
 
   } catch (err: any) {
     console.error('[FETCH] Fatal:', err.message);

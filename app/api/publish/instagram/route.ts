@@ -2,7 +2,7 @@ export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth } from '@/lib/auth/server';
 import { instagramService } from '@/lib/services/instagram';
-import { createSupabaseServerClient } from '@/lib/supabase/server';
+import { createClient } from '@supabase/supabase-js';
 import prisma from '@/lib/prisma';
 
 export const runtime = 'nodejs';
@@ -22,7 +22,11 @@ export async function POST(request: NextRequest) {
         }
 
         // 1. Get Instagram Credentials
-        const supabase = createSupabaseServerClient();
+        const supabase = createClient(
+            process.env.NEXT_PUBLIC_SUPABASE_URL!,
+            process.env.SUPABASE_SERVICE_ROLE_KEY!,
+            { auth: { persistSession: false } }
+        );
         const { instagramId, accessToken } = await instagramService.getInstagramAccountId(user.id, supabase);
 
         // 2. Upload file temporarily to Supabase Storage to get a Public URL
@@ -97,7 +101,11 @@ export async function POST(request: NextRequest) {
             const parsedError = JSON.parse(errorMessage);
             if (parsedError.type === 'APP_DELETED') {
                 try {
-                    const supabase = createSupabaseServerClient();
+                    const supabase = createClient(
+                        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+                        process.env.SUPABASE_SERVICE_ROLE_KEY!,
+                        { auth: { persistSession: false } }
+                    );
 
                     console.log(`[INSTAGRAM PUBLISH] App deleted detected. Dropping legacy DB connections for user ${user.id}`);
 

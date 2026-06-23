@@ -100,6 +100,8 @@ export async function GET(request: NextRequest) {
             }
         });
 
+        console.log(`[DASHBOARD STATS] Platform Stats computed:`, JSON.stringify(platformStats, null, 2));
+
         // 4. Latest analytics snapshot via analytics_current with fallback (Neon)
         const currentStats = currentStatsResult;
         let latestSnap: any = null;
