@@ -159,8 +159,9 @@ export async function GET(request: NextRequest) {
     // ========================
     console.log('[ANALYTICS TEST] 6. Testing fetch-analytics endpoint...')
     try {
+      const origin = request.nextUrl.origin;
       const response = await fetch(
-        `http://localhost:3001/api/fetch-analytics?test=true`,
+        `${origin}/api/fetch-analytics?test=true`,
         { headers: { 'User-Agent': 'Analytics-Test-Suite' } }
       )
       const data = await response.json()
