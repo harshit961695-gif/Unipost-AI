@@ -12,15 +12,13 @@ import {
   Settings,
   Sparkles,
   LogOut,
-  Menu,
-  CalendarClock
+  Menu
 } from "lucide-react"
 import { supabase } from "@/lib/supabaseClient"
 
 const navigation = [
   { name: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
   { name: "Create Post", href: "/dashboard/create", icon: PenSquare },
-  { name: "Schedule", href: "/dashboard/schedule", icon: CalendarClock },
   { name: "Analytics", href: "/dashboard/analytics", icon: BarChart2 },
   { name: "Settings", href: "/dashboard/settings", icon: Settings },
 ]
