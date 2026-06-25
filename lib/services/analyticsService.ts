@@ -78,51 +78,86 @@ export async function fetchFacebookMetrics(
       return null
     }
 
-    console.log('[FB] Using basic fields endpoint (no App Review needed)')
-    const url = `https://graph.facebook.com/v21.0/${fullPostId}?fields=likes.summary(true),comments.summary(true),shares,created_time&access_token=${accessToken}`
-    const redactedUrl = url.replace(accessToken, 'PAGE_TOKEN_REDACTED')
-    console.log(`[FB REQUEST URL] ${redactedUrl}`)
+    const metricsToFetch = [
+      'post_reactions_by_type_total',
+      'post_clicks',
+      'post_impressions',
+      'post_impressions_unique',
+      'post_engaged_users'
+    ]
 
-    const res = await fetchWithTimeout(url)
-    const data = await res.json()
+    console.log(`[FB] Querying insights fallback endpoints for post ${fullPostId}`)
+    const promises = metricsToFetch.map(async (metric) => {
+      const url = `https://graph.facebook.com/v21.0/${fullPostId}/insights/${metric}?access_token=${accessToken}`
+      const redactedUrl = url.replace(accessToken, 'PAGE_TOKEN_REDACTED')
+      console.log(`[FB REQUEST URL] ${redactedUrl}`)
+      const res = await fetchWithTimeout(url)
+      const data = await res.json()
+      console.log(`[FB INSIGHTS RESPONSE] HTTP ${res.status} for post ${fullPostId} metric ${metric}:`, JSON.stringify(data))
+      return { metric, status: res.status, data }
+    })
 
-    console.log(`[FB RAW RESPONSE] HTTP ${res.status} for post ${fullPostId}:`, JSON.stringify(data))
+    const results = await Promise.all(promises)
 
-    if (data.error) {
-      console.warn(`[FB POST FETCH] Primary query failed. Attempting post confirmation fallback...`)
-      
-      const confirmUrl = `https://graph.facebook.com/v21.0/${fullPostId}?fields=id,message,created_time&access_token=${accessToken}`
-      const confirmRes = await fetchWithTimeout(confirmUrl)
-      const confirmData = await confirmRes.json()
-      
-      console.log(`[FB CONFIRM RESPONSE] HTTP ${confirmRes.status} for post ${fullPostId}:`, JSON.stringify(confirmData))
-      
-      if (confirmData.error) {
-        console.error(`[FB POST FETCH] Confirmation fallback also failed: ${JSON.stringify(confirmData.error)}`)
-        // Trigger Reconnect Facebook notification if token is expired/invalid
-        if (userId && (confirmData.error.code === 190 || confirmData.error.message?.includes('access token') || confirmData.error.message?.includes('validate'))) {
-            await notificationService.createNotification(
-                userId,
-                'account_expired_facebook',
-                'Reconnect Facebook',
-                'Facebook connection expired.\nReconnect your account.'
-            );
-        }
-        return null
+    // Check if any error is due to an expired token, and trigger reconnect if so
+    const tokenError = results.find(
+      (r) =>
+        r.data.error &&
+        (r.data.error.code === 190 ||
+          r.data.error.message?.toLowerCase().includes('access token') ||
+          r.data.error.message?.toLowerCase().includes('validate'))
+    )
+    if (tokenError && userId) {
+      console.log(`[FB POST FETCH] Access token validation failure detected, triggering reconnect notification.`)
+      await notificationService.createNotification(
+        userId,
+        'account_expired_facebook',
+        'Reconnect Facebook',
+        'Facebook connection expired.\nReconnect your account.'
+      )
+    }
+
+    // Preserve existing values when Meta returns empty arrays or any error
+    let hasEmptyOrError = false
+    for (const res of results) {
+      if (res.data.error || !res.data.data || res.data.data.length === 0) {
+        console.warn(`[FB INSIGHTS] Metric "${res.metric}" returned empty array or error.`)
+        hasEmptyOrError = true
       }
-      
-      // Post exists but primary metrics query failed (e.g. missing permissions). Return null to keep existing DB values.
-      console.log(`[FB POST FETCH] Post confirmed to exist but metrics query failed. Returning null to keep existing values.`)
+    }
+
+    if (hasEmptyOrError) {
+      console.log(`[FB POST FETCH] Post returned empty arrays or error for insights. Returning null to keep existing values.`)
       return null
     }
 
-    const likes = data.likes?.summary?.total_count || 0
-    const comments = data.comments?.summary?.total_count || 0
-    const shares = data.shares?.count || 0
-    const engagement = likes + comments + shares
-    const views = engagement
-    const reach = engagement
-    const impressions = engagement
+    // Extract metrics
+    const reactionsResult = results.find((r) => r.metric === 'post_reactions_by_type_total')
+    const impressionsResult = results.find((r) => r.metric === 'post_impressions')
+    const reachResult = results.find((r) => r.metric === 'post_impressions_unique')
+    const engagedResult = results.find((r) => r.metric === 'post_engaged_users')
+
+    // 4. Aggregate reactions as likes
+    const reactionsVal = reactionsResult?.data?.data?.[0]?.values?.[0]?.value || {}
+    let likes = 0
+    if (typeof reactionsVal === 'object') {
+      likes = Object.values(reactionsVal).reduce((sum: number, val: any) => sum + Number(val || 0), 0)
+    } else if (typeof reactionsVal === 'number') {
+      likes = reactionsVal
+    }
+
+    // 5. Use engaged_users as engagement
+    const engagement = Number(engagedResult?.data?.data?.[0]?.values?.[0]?.value || 0)
+
+    // 6. Use impressions_unique as reach
+    const reach = Number(reachResult?.data?.data?.[0]?.values?.[0]?.value || 0)
+
+    // 7. Use impressions as impressions
+    const impressions = Number(impressionsResult?.data?.data?.[0]?.values?.[0]?.value || 0)
+
+    const views = impressions
+    const comments = 0
+    const shares = 0
     const engagement_rate = impressions > 0 ? (engagement / impressions) * 100 : 0
 
     const metrics: PlatformMetrics = {
@@ -136,7 +171,7 @@ export async function fetchFacebookMetrics(
       engagement_rate: Math.round(engagement_rate * 100) / 100,
     }
 
-    console.log(`[FB FINAL METRICS] post=${fullPostId} likes=${likes} comments=${comments} shares=${shares} engagement=${engagement}`)
+    console.log(`[FB FINAL METRICS] post=${fullPostId} likes=${likes} reach=${reach} impressions=${impressions} engagement=${engagement}`)
     return metrics
 
   } catch (error: any) {
